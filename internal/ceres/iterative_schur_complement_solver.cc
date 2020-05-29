@@ -68,6 +68,10 @@ LinearSolver::Summary IterativeSchurComplementSolver::SolveImpl(
   EventLogger event_logger("IterativeSchurComplementSolver::Solve");
 
   CHECK(A->block_structure() != nullptr);
+  A->ComputeColumnBlockStructure();
+  A->SetContext(options_.context);
+  CHECK(options_.context);
+  A->SetNumThreads(options_.num_threads);
   const int num_eliminate_blocks = options_.elimination_groups[0];
   // Initialize a ImplicitSchurComplement object.
   if (schur_complement_ == NULL) {

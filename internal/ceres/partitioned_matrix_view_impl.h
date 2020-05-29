@@ -28,14 +28,15 @@
 //
 // Author: sameeragarwal@google.com (Sameer Agarwal)
 
-#include "ceres/partitioned_matrix_view.h"
-
 #include <algorithm>
 #include <cstring>
 #include <vector>
+
 #include "ceres/block_sparse_matrix.h"
 #include "ceres/block_structure.h"
 #include "ceres/internal/eigen.h"
+#include "ceres/parallel_for.h"
+#include "ceres/partitioned_matrix_view.h"
 #include "ceres/small_blas.h"
 #include "glog/logging.h"
 
@@ -44,11 +45,8 @@ namespace internal {
 
 template <int kRowBlockSize, int kEBlockSize, int kFBlockSize>
 PartitionedMatrixView<kRowBlockSize, kEBlockSize, kFBlockSize>::
-PartitionedMatrixView(
-    const BlockSparseMatrix& matrix,
-    int num_col_blocks_e)
-    : matrix_(matrix),
-      num_col_blocks_e_(num_col_blocks_e) {
+    PartitionedMatrixView(const BlockSparseMatrix& matrix, int num_col_blocks_e)
+    : matrix_(matrix), num_col_blocks_e_(num_col_blocks_e) {
   const CompressedRowBlockStructure* bs = matrix_.block_structure();
   CHECK(bs != nullptr);
 
@@ -85,8 +83,7 @@ PartitionedMatrixView(
 
 template <int kRowBlockSize, int kEBlockSize, int kFBlockSize>
 PartitionedMatrixView<kRowBlockSize, kEBlockSize, kFBlockSize>::
-~PartitionedMatrixView() {
-}
+    ~PartitionedMatrixView() {}
 
 // The next four methods don't seem to be particularly cache
 // friendly. This is an artifact of how the BlockStructure of the
@@ -101,18 +98,43 @@ RightMultiplyE(const double* x, double* y) const {
 
   // Iterate over the first num_row_blocks_e_ row blocks, and multiply
   // by the first cell in each row block.
-  const double* values = matrix_.values();
-  for (int r = 0; r < num_row_blocks_e_; ++r) {
-    const Cell& cell = bs->rows[r].cells[0];
-    const int row_block_pos = bs->rows[r].block.position;
-    const int row_block_size = bs->rows[r].block.size;
-    const int col_block_id = cell.block_id;
-    const int col_block_pos = bs->cols[col_block_id].position;
-    const int col_block_size = bs->cols[col_block_id].size;
-    MatrixVectorMultiply<kRowBlockSize, kEBlockSize, 1>(
-        values + cell.position, row_block_size, col_block_size,
-        x + col_block_pos,
-        y + row_block_pos);
+  auto context = matrix_.GetContext();
+  if (!context) {
+    const double* values = matrix_.values();
+    for (int r = 0; r < num_row_blocks_e_; ++r) {
+      const Cell& cell = bs->rows[r].cells[0];
+      const int row_block_pos = bs->rows[r].block.position;
+      const int row_block_size = bs->rows[r].block.size;
+      const int col_block_id = cell.block_id;
+      const int col_block_pos = bs->cols[col_block_id].position;
+      const int col_block_size = bs->cols[col_block_id].size;
+      MatrixVectorMultiply<kRowBlockSize, kEBlockSize, 1>(
+          values + cell.position,
+          row_block_size,
+          col_block_size,
+          x + col_block_pos,
+          y + row_block_pos);
+    }
+  } else {
+    const double* values = matrix_.values();
+    ParallelFor(matrix_.GetContext(),
+                0,
+                num_row_blocks_e_,
+                matrix_.GetNumThreads(),
+                [&](int r) {
+                  const Cell& cell = bs->rows[r].cells[0];
+                  const int row_block_pos = bs->rows[r].block.position;
+                  const int row_block_size = bs->rows[r].block.size;
+                  const int col_block_id = cell.block_id;
+                  const int col_block_pos = bs->cols[col_block_id].position;
+                  const int col_block_size = bs->cols[col_block_id].size;
+                  MatrixVectorMultiply<kRowBlockSize, kEBlockSize, 1>(
+                      values + cell.position,
+                      row_block_size,
+                      col_block_size,
+                      x + col_block_pos,
+                      y + row_block_pos);
+                });
   }
 }
 
@@ -127,35 +149,86 @@ RightMultiplyF(const double* x, double* y) const {
   // E. If the row block is not in E (i.e its in the bottom
   // num_row_blocks - num_row_blocks_e row blocks), then all the cells
   // are of type F and multiply by them all.
-  const double* values = matrix_.values();
-  for (int r = 0; r < num_row_blocks_e_; ++r) {
-    const int row_block_pos = bs->rows[r].block.position;
-    const int row_block_size = bs->rows[r].block.size;
-    const std::vector<Cell>& cells = bs->rows[r].cells;
-    for (int c = 1; c < cells.size(); ++c) {
-      const int col_block_id = cells[c].block_id;
-      const int col_block_pos = bs->cols[col_block_id].position;
-      const int col_block_size = bs->cols[col_block_id].size;
-      MatrixVectorMultiply<kRowBlockSize, kFBlockSize, 1>(
-          values + cells[c].position, row_block_size, col_block_size,
-          x + col_block_pos - num_cols_e_,
-          y + row_block_pos);
-    }
-  }
 
-  for (int r = num_row_blocks_e_; r < bs->rows.size(); ++r) {
-    const int row_block_pos = bs->rows[r].block.position;
-    const int row_block_size = bs->rows[r].block.size;
-    const std::vector<Cell>& cells = bs->rows[r].cells;
-    for (int c = 0; c < cells.size(); ++c) {
-      const int col_block_id = cells[c].block_id;
-      const int col_block_pos = bs->cols[col_block_id].position;
-      const int col_block_size = bs->cols[col_block_id].size;
-      MatrixVectorMultiply<Eigen::Dynamic, Eigen::Dynamic, 1>(
-          values + cells[c].position, row_block_size, col_block_size,
-          x + col_block_pos - num_cols_e_,
-          y + row_block_pos);
+  auto context = matrix_.GetContext();
+  if (!context) {
+    const double* values = matrix_.values();
+    for (int r = 0; r < num_row_blocks_e_; ++r) {
+      const int row_block_pos = bs->rows[r].block.position;
+      const int row_block_size = bs->rows[r].block.size;
+      const std::vector<Cell>& cells = bs->rows[r].cells;
+      for (int c = 1; c < cells.size(); ++c) {
+        const int col_block_id = cells[c].block_id;
+        const int col_block_pos = bs->cols[col_block_id].position;
+        const int col_block_size = bs->cols[col_block_id].size;
+        MatrixVectorMultiply<kRowBlockSize, kFBlockSize, 1>(
+            values + cells[c].position,
+            row_block_size,
+            col_block_size,
+            x + col_block_pos - num_cols_e_,
+            y + row_block_pos);
+      }
     }
+
+    for (int r = num_row_blocks_e_; r < bs->rows.size(); ++r) {
+      const int row_block_pos = bs->rows[r].block.position;
+      const int row_block_size = bs->rows[r].block.size;
+      const std::vector<Cell>& cells = bs->rows[r].cells;
+      for (int c = 0; c < cells.size(); ++c) {
+        const int col_block_id = cells[c].block_id;
+        const int col_block_pos = bs->cols[col_block_id].position;
+        const int col_block_size = bs->cols[col_block_id].size;
+        MatrixVectorMultiply<Eigen::Dynamic, Eigen::Dynamic, 1>(
+            values + cells[c].position,
+            row_block_size,
+            col_block_size,
+            x + col_block_pos - num_cols_e_,
+            y + row_block_pos);
+      }
+    }
+  } else {
+    const double* values = matrix_.values();
+    ParallelFor(matrix_.GetContext(),
+                0,
+                num_row_blocks_e_,
+                matrix_.GetNumThreads(),
+                [&](int r) {
+                  const int row_block_pos = bs->rows[r].block.position;
+                  const int row_block_size = bs->rows[r].block.size;
+                  const std::vector<Cell>& cells = bs->rows[r].cells;
+                  for (int c = 1; c < cells.size(); ++c) {
+                    const int col_block_id = cells[c].block_id;
+                    const int col_block_pos = bs->cols[col_block_id].position;
+                    const int col_block_size = bs->cols[col_block_id].size;
+                    MatrixVectorMultiply<kRowBlockSize, kFBlockSize, 1>(
+                        values + cells[c].position,
+                        row_block_size,
+                        col_block_size,
+                        x + col_block_pos - num_cols_e_,
+                        y + row_block_pos);
+                  }
+                });
+
+    ParallelFor(matrix_.GetContext(),
+                num_row_blocks_e_,
+                bs->rows.size(),
+                matrix_.GetNumThreads(),
+                [&](int r) {
+                  const int row_block_pos = bs->rows[r].block.position;
+                  const int row_block_size = bs->rows[r].block.size;
+                  const std::vector<Cell>& cells = bs->rows[r].cells;
+                  for (int c = 0; c < cells.size(); ++c) {
+                    const int col_block_id = cells[c].block_id;
+                    const int col_block_pos = bs->cols[col_block_id].position;
+                    const int col_block_size = bs->cols[col_block_id].size;
+                    MatrixVectorMultiply<Eigen::Dynamic, Eigen::Dynamic, 1>(
+                        values + cells[c].position,
+                        row_block_size,
+                        col_block_size,
+                        x + col_block_pos - num_cols_e_,
+                        y + row_block_pos);
+                  }
+                });
   }
 }
 
@@ -163,22 +236,54 @@ template <int kRowBlockSize, int kEBlockSize, int kFBlockSize>
 void
 PartitionedMatrixView<kRowBlockSize, kEBlockSize, kFBlockSize>::
 LeftMultiplyE(const double* x, double* y) const {
-  const CompressedRowBlockStructure* bs = matrix_.block_structure();
+  auto context = matrix_.GetContext();
+  if (!context) {
+    const CompressedRowBlockStructure* bs = matrix_.block_structure();
 
-  // Iterate over the first num_row_blocks_e_ row blocks, and multiply
-  // by the first cell in each row block.
-  const double* values = matrix_.values();
-  for (int r = 0; r < num_row_blocks_e_; ++r) {
-    const Cell& cell = bs->rows[r].cells[0];
-    const int row_block_pos = bs->rows[r].block.position;
-    const int row_block_size = bs->rows[r].block.size;
-    const int col_block_id = cell.block_id;
-    const int col_block_pos = bs->cols[col_block_id].position;
-    const int col_block_size = bs->cols[col_block_id].size;
-    MatrixTransposeVectorMultiply<kRowBlockSize, kEBlockSize, 1>(
-        values + cell.position, row_block_size, col_block_size,
-        x + row_block_pos,
-        y + col_block_pos);
+    // Iterate over the first num_row_blocks_e_ row blocks, and multiply
+    // by the first cell in each row block.
+    const double* values = matrix_.values();
+    for (int r = 0; r < num_row_blocks_e_; ++r) {
+      const Cell& cell = bs->rows[r].cells[0];
+      const int row_block_pos = bs->rows[r].block.position;
+      const int row_block_size = bs->rows[r].block.size;
+      const int col_block_id = cell.block_id;
+      const int col_block_pos = bs->cols[col_block_id].position;
+      const int col_block_size = bs->cols[col_block_id].size;
+
+      // visited_cols.insert(col_block_pos);
+      MatrixTransposeVectorMultiply<kRowBlockSize, kEBlockSize, 1>(
+          values + cell.position,
+          row_block_size,
+          col_block_size,
+          x + row_block_pos,
+          y + col_block_pos);
+    }
+  } else {
+    const CompressedColumnBlockStructure* cs =
+        matrix_.block_structure_columns();
+    const double* values = matrix_.values();
+    ParallelFor(
+        matrix_.GetContext(),
+        0,
+        num_col_blocks_e_,
+        matrix_.GetNumThreads(),
+        [&](int c) {
+          const int col_block_pos = cs->cols[c].block.position;
+          const int col_block_size = cs->cols[c].block.size;
+          for (auto& cell : cs->cols[c].cells) {
+            const int row_block_id = cell.block_id;
+            const int row_block_size = cs->rows[row_block_id].size;
+            const int row_block_pos = cs->rows[row_block_id].position;
+
+            MatrixTransposeVectorMultiply<kRowBlockSize, kEBlockSize, 1>(
+                values + cell.position,
+                row_block_size,
+                col_block_size,
+                x + row_block_pos,
+                y + col_block_pos);
+          }
+        });
   }
 }
 
@@ -186,6 +291,7 @@ template <int kRowBlockSize, int kEBlockSize, int kFBlockSize>
 void
 PartitionedMatrixView<kRowBlockSize, kEBlockSize, kFBlockSize>::
 LeftMultiplyF(const double* x, double* y) const {
+  auto context = matrix_.GetContext();
   const CompressedRowBlockStructure* bs = matrix_.block_structure();
 
   // Iterate over row blocks, and if the row block is in E, then
@@ -194,34 +300,74 @@ LeftMultiplyF(const double* x, double* y) const {
   // num_row_blocks - num_row_blocks_e row blocks), then all the cells
   // are of type F and multiply by them all.
   const double* values = matrix_.values();
-  for (int r = 0; r < num_row_blocks_e_; ++r) {
-    const int row_block_pos = bs->rows[r].block.position;
-    const int row_block_size = bs->rows[r].block.size;
-    const std::vector<Cell>& cells = bs->rows[r].cells;
-    for (int c = 1; c < cells.size(); ++c) {
-      const int col_block_id = cells[c].block_id;
-      const int col_block_pos = bs->cols[col_block_id].position;
-      const int col_block_size = bs->cols[col_block_id].size;
-      MatrixTransposeVectorMultiply<kRowBlockSize, kFBlockSize, 1>(
-        values + cells[c].position, row_block_size, col_block_size,
-        x + row_block_pos,
-        y + col_block_pos - num_cols_e_);
+  if (!context) {
+    for (int r = 0; r < num_row_blocks_e_; ++r) {
+      const int row_block_pos = bs->rows[r].block.position;
+      const int row_block_size = bs->rows[r].block.size;
+      const std::vector<Cell>& cells = bs->rows[r].cells;
+      for (int c = 1; c < cells.size(); ++c) {
+        const int col_block_id = cells[c].block_id;
+        const int col_block_pos = bs->cols[col_block_id].position;
+        const int col_block_size = bs->cols[col_block_id].size;
+        MatrixTransposeVectorMultiply<kRowBlockSize, kFBlockSize, 1>(
+            values + cells[c].position,
+            row_block_size,
+            col_block_size,
+            x + row_block_pos,
+            y + col_block_pos - num_cols_e_);
+      }
     }
-  }
 
-  for (int r = num_row_blocks_e_; r < bs->rows.size(); ++r) {
-    const int row_block_pos = bs->rows[r].block.position;
-    const int row_block_size = bs->rows[r].block.size;
-    const std::vector<Cell>& cells = bs->rows[r].cells;
-    for (int c = 0; c < cells.size(); ++c) {
-      const int col_block_id = cells[c].block_id;
-      const int col_block_pos = bs->cols[col_block_id].position;
-      const int col_block_size = bs->cols[col_block_id].size;
-      MatrixTransposeVectorMultiply<Eigen::Dynamic, Eigen::Dynamic, 1>(
-        values + cells[c].position, row_block_size, col_block_size,
-        x + row_block_pos,
-        y + col_block_pos - num_cols_e_);
+    for (int r = num_row_blocks_e_; r < bs->rows.size(); ++r) {
+      const int row_block_pos = bs->rows[r].block.position;
+      const int row_block_size = bs->rows[r].block.size;
+      const std::vector<Cell>& cells = bs->rows[r].cells;
+      for (int c = 0; c < cells.size(); ++c) {
+        const int col_block_id = cells[c].block_id;
+        const int col_block_pos = bs->cols[col_block_id].position;
+        const int col_block_size = bs->cols[col_block_id].size;
+        MatrixTransposeVectorMultiply<Eigen::Dynamic, Eigen::Dynamic, 1>(
+            values + cells[c].position,
+            row_block_size,
+            col_block_size,
+            x + row_block_pos,
+            y + col_block_pos - num_cols_e_);
+      }
     }
+  } else {
+    const CompressedColumnBlockStructure* cs =
+        matrix_.block_structure_columns();
+    const double* values = matrix_.values();
+    ParallelFor(
+        matrix_.GetContext(),
+        num_col_blocks_e_,
+        cs->cols.size(),
+        matrix_.GetNumThreads(),
+        [&](int c) {
+          const int col_block_pos = cs->cols[c].block.position;
+          const int col_block_size = cs->cols[c].block.size;
+          for (auto& cell : cs->cols[c].cells) {
+            const int row_block_id = cell.block_id;
+            const int row_block_size = cs->rows[row_block_id].size;
+            const int row_block_pos = cs->rows[row_block_id].position;
+
+            if (row_block_id < num_row_blocks_e_) {
+              MatrixTransposeVectorMultiply<kRowBlockSize, kFBlockSize, 1>(
+                  values + cell.position,
+                  row_block_size,
+                  col_block_size,
+                  x + row_block_pos,
+                  y + col_block_pos - num_cols_e_);
+            } else {
+              MatrixTransposeVectorMultiply<Eigen::Dynamic, Eigen::Dynamic, 1>(
+                  values + cell.position,
+                  row_block_size,
+                  col_block_size,
+                  x + row_block_pos,
+                  y + col_block_pos - num_cols_e_);
+            }
+          }
+        });
   }
 }
 
@@ -265,7 +411,8 @@ CreateBlockDiagonalMatrixLayout(int start_col_block, int end_col_block) const {
 
   // Build a BlockSparseMatrix with the just computed block
   // structure.
-  return new BlockSparseMatrix(block_diagonal_structure);
+  return new BlockSparseMatrix(
+      block_diagonal_structure, true, matrix_.GetContext());
 }
 
 template <int kRowBlockSize, int kEBlockSize, int kFBlockSize>
@@ -282,9 +429,8 @@ template <int kRowBlockSize, int kEBlockSize, int kFBlockSize>
 BlockSparseMatrix*
 PartitionedMatrixView<kRowBlockSize, kEBlockSize, kFBlockSize>::
 CreateBlockDiagonalFtF() const {
-  BlockSparseMatrix* block_diagonal =
-      CreateBlockDiagonalMatrixLayout(
-          num_col_blocks_e_, num_col_blocks_e_ + num_col_blocks_f_);
+  BlockSparseMatrix* block_diagonal = CreateBlockDiagonalMatrixLayout(
+      num_col_blocks_e_, num_col_blocks_e_ + num_col_blocks_f_);
   UpdateBlockDiagonalFtF(block_diagonal);
   return block_diagonal;
 }
@@ -295,30 +441,78 @@ CreateBlockDiagonalFtF() const {
 //    block_diagonal = block_diagonal(E'E)
 //
 template <int kRowBlockSize, int kEBlockSize, int kFBlockSize>
-void
-PartitionedMatrixView<kRowBlockSize, kEBlockSize, kFBlockSize>::
-UpdateBlockDiagonalEtE(
-    BlockSparseMatrix* block_diagonal) const {
+void PartitionedMatrixView<kRowBlockSize, kEBlockSize, kFBlockSize>::
+    UpdateBlockDiagonalEtE(BlockSparseMatrix* block_diagonal) const {
   const CompressedRowBlockStructure* bs = matrix_.block_structure();
   const CompressedRowBlockStructure* block_diagonal_structure =
       block_diagonal->block_structure();
 
-  block_diagonal->SetZero();
-  const double* values = matrix_.values();
-  for (int r = 0; r < num_row_blocks_e_ ; ++r) {
-    const Cell& cell = bs->rows[r].cells[0];
-    const int row_block_size = bs->rows[r].block.size;
-    const int block_id = cell.block_id;
-    const int col_block_size = bs->cols[block_id].size;
-    const int cell_position =
-        block_diagonal_structure->rows[block_id].cells[0].position;
+  auto context = matrix_.GetContext();
 
-    MatrixTransposeMatrixMultiply
-        <kRowBlockSize, kEBlockSize, kRowBlockSize, kEBlockSize, 1>(
-            values + cell.position, row_block_size, col_block_size,
-            values + cell.position, row_block_size, col_block_size,
-            block_diagonal->mutable_values() + cell_position,
-            0, 0, col_block_size, col_block_size);
+  block_diagonal->SetZero();
+  if (!context) {
+    const double* values = matrix_.values();
+    for (int r = 0; r < num_row_blocks_e_; ++r) {
+      const Cell& cell = bs->rows[r].cells[0];
+      const int row_block_size = bs->rows[r].block.size;
+      const int block_id = cell.block_id;
+      const int col_block_size = bs->cols[block_id].size;
+      const int cell_position =
+          block_diagonal_structure->rows[block_id].cells[0].position;
+
+      MatrixTransposeMatrixMultiply<kRowBlockSize,
+                                    kEBlockSize,
+                                    kRowBlockSize,
+                                    kEBlockSize,
+                                    1>(
+          values + cell.position,
+          row_block_size,
+          col_block_size,
+          values + cell.position,
+          row_block_size,
+          col_block_size,
+          block_diagonal->mutable_values() + cell_position,
+          0,
+          0,
+          col_block_size,
+          col_block_size);
+    }
+  } else {
+    const CompressedColumnBlockStructure* cs =
+        matrix_.block_structure_columns();
+    const double* values = matrix_.values();
+    ParallelFor(matrix_.GetContext(),
+                0,
+                num_col_blocks_e_,
+                matrix_.GetNumThreads(),
+                [&](int c) {
+                  const int col_block_pos = cs->cols[c].block.position;
+                  const int col_block_size = cs->cols[c].block.size;
+                  for (auto& cell : cs->cols[c].cells) {
+                    const int row_block_id = cell.block_id;
+                    const int row_block_size = cs->rows[row_block_id].size;
+                    const int row_block_pos = cs->rows[row_block_id].position;
+                    const int cell_position =
+                        block_diagonal_structure->rows[c].cells[0].position;
+
+                    MatrixTransposeMatrixMultiply<kRowBlockSize,
+                                                  kEBlockSize,
+                                                  kRowBlockSize,
+                                                  kEBlockSize,
+                                                  1>(
+                        values + cell.position,
+                        row_block_size,
+                        col_block_size,
+                        values + cell.position,
+                        row_block_size,
+                        col_block_size,
+                        block_diagonal->mutable_values() + cell_position,
+                        0,
+                        0,
+                        col_block_size,
+                        col_block_size);
+                  }
+                });
   }
 }
 
@@ -335,44 +529,126 @@ UpdateBlockDiagonalFtF(BlockSparseMatrix* block_diagonal) const {
   const CompressedRowBlockStructure* block_diagonal_structure =
       block_diagonal->block_structure();
 
-  block_diagonal->SetZero();
-  const double* values = matrix_.values();
-  for (int r = 0; r < num_row_blocks_e_; ++r) {
-    const int row_block_size = bs->rows[r].block.size;
-    const std::vector<Cell>& cells = bs->rows[r].cells;
-    for (int c = 1; c < cells.size(); ++c) {
-      const int col_block_id = cells[c].block_id;
-      const int col_block_size = bs->cols[col_block_id].size;
-      const int diagonal_block_id = col_block_id - num_col_blocks_e_;
-      const int cell_position =
-          block_diagonal_structure->rows[diagonal_block_id].cells[0].position;
+  auto context = matrix_.GetContext();
+  if (!context) {
+    block_diagonal->SetZero();
+    const double* values = matrix_.values();
+    for (int r = 0; r < num_row_blocks_e_; ++r) {
+      const int row_block_size = bs->rows[r].block.size;
+      const std::vector<Cell>& cells = bs->rows[r].cells;
+      for (int c = 1; c < cells.size(); ++c) {
+        const int col_block_id = cells[c].block_id;
+        const int col_block_size = bs->cols[col_block_id].size;
+        const int diagonal_block_id = col_block_id - num_col_blocks_e_;
+        const int cell_position =
+            block_diagonal_structure->rows[diagonal_block_id].cells[0].position;
 
-      MatrixTransposeMatrixMultiply
-          <kRowBlockSize, kFBlockSize, kRowBlockSize, kFBlockSize, 1>(
-              values + cells[c].position, row_block_size, col_block_size,
-              values + cells[c].position, row_block_size, col_block_size,
-              block_diagonal->mutable_values() + cell_position,
-              0, 0, col_block_size, col_block_size);
+        MatrixTransposeMatrixMultiply<kRowBlockSize,
+                                      kFBlockSize,
+                                      kRowBlockSize,
+                                      kFBlockSize,
+                                      1>(
+            values + cells[c].position,
+            row_block_size,
+            col_block_size,
+            values + cells[c].position,
+            row_block_size,
+            col_block_size,
+            block_diagonal->mutable_values() + cell_position,
+            0,
+            0,
+            col_block_size,
+            col_block_size);
+      }
     }
-  }
 
-  for (int r = num_row_blocks_e_; r < bs->rows.size(); ++r) {
-    const int row_block_size = bs->rows[r].block.size;
-    const std::vector<Cell>& cells = bs->rows[r].cells;
-    for (int c = 0; c < cells.size(); ++c) {
-      const int col_block_id = cells[c].block_id;
-      const int col_block_size = bs->cols[col_block_id].size;
-      const int diagonal_block_id = col_block_id - num_col_blocks_e_;
-      const int cell_position =
-          block_diagonal_structure->rows[diagonal_block_id].cells[0].position;
+    for (int r = num_row_blocks_e_; r < bs->rows.size(); ++r) {
+      const int row_block_size = bs->rows[r].block.size;
+      const std::vector<Cell>& cells = bs->rows[r].cells;
+      for (int c = 0; c < cells.size(); ++c) {
+        const int col_block_id = cells[c].block_id;
+        const int col_block_size = bs->cols[col_block_id].size;
+        const int diagonal_block_id = col_block_id - num_col_blocks_e_;
+        const int cell_position =
+            block_diagonal_structure->rows[diagonal_block_id].cells[0].position;
 
-      MatrixTransposeMatrixMultiply
-          <Eigen::Dynamic, Eigen::Dynamic, Eigen::Dynamic, Eigen::Dynamic, 1>(
-              values + cells[c].position, row_block_size, col_block_size,
-              values + cells[c].position, row_block_size, col_block_size,
-              block_diagonal->mutable_values() + cell_position,
-              0, 0, col_block_size, col_block_size);
+        MatrixTransposeMatrixMultiply<Eigen::Dynamic,
+                                      Eigen::Dynamic,
+                                      Eigen::Dynamic,
+                                      Eigen::Dynamic,
+                                      1>(
+            values + cells[c].position,
+            row_block_size,
+            col_block_size,
+            values + cells[c].position,
+            row_block_size,
+            col_block_size,
+            block_diagonal->mutable_values() + cell_position,
+            0,
+            0,
+            col_block_size,
+            col_block_size);
+      }
     }
+  } else {
+    block_diagonal->SetZero();
+    const CompressedColumnBlockStructure* cs =
+        matrix_.block_structure_columns();
+    const double* values = matrix_.values();
+    ParallelFor(matrix_.GetContext(),
+                num_col_blocks_e_,
+                cs->cols.size(),
+                matrix_.GetNumThreads(),
+                [&](int c) {
+                  const int col_block_pos = cs->cols[c].block.position;
+                  const int col_block_size = cs->cols[c].block.size;
+                  const int diagonal_block_id = c - num_col_blocks_e_;
+                  const int cell_position =
+                      block_diagonal_structure->rows[diagonal_block_id]
+                          .cells[0]
+                          .position;
+                  for (auto& cell : cs->cols[c].cells) {
+                    const int row_block_id = cell.block_id;
+                    const int row_block_size = cs->rows[row_block_id].size;
+                    const int row_block_pos = cs->rows[row_block_id].position;
+
+                    if (row_block_id < num_row_blocks_e_) {
+                      MatrixTransposeMatrixMultiply<kRowBlockSize,
+                                                    kFBlockSize,
+                                                    kRowBlockSize,
+                                                    kFBlockSize,
+                                                    1>(
+                          values + cell.position,
+                          row_block_size,
+                          col_block_size,
+                          values + cell.position,
+                          row_block_size,
+                          col_block_size,
+                          block_diagonal->mutable_values() + cell_position,
+                          0,
+                          0,
+                          col_block_size,
+                          col_block_size);
+                    } else {
+                      MatrixTransposeMatrixMultiply<Eigen::Dynamic,
+                                                    Eigen::Dynamic,
+                                                    Eigen::Dynamic,
+                                                    Eigen::Dynamic,
+                                                    1>(
+                          values + cell.position,
+                          row_block_size,
+                          col_block_size,
+                          values + cell.position,
+                          row_block_size,
+                          col_block_size,
+                          block_diagonal->mutable_values() + cell_position,
+                          0,
+                          0,
+                          col_block_size,
+                          col_block_size);
+                    }
+                  }
+                });
   }
 }
 

@@ -62,6 +62,10 @@ LinearSolver::Summary CgnrSolver::SolveImpl(
     const LinearSolver::PerSolveOptions& per_solve_options,
     double* x) {
   EventLogger event_logger("CgnrSolver::Solve");
+  A->ComputeColumnBlockStructure();
+  A->SetContext(options_.context);
+  CHECK(options_.context);
+  A->SetNumThreads(options_.num_threads);
 
   // Form z = Atb.
   Vector z(A->num_cols());

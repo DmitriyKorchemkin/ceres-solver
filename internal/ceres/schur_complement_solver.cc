@@ -123,6 +123,10 @@ LinearSolver::Summary SchurComplementSolver::SolveImpl(
   EventLogger event_logger("SchurComplementSolver::Solve");
 
   const CompressedRowBlockStructure* bs = A->block_structure();
+  A->ComputeColumnBlockStructure();
+  A->SetContext(options_.context);
+  CHECK(options_.context);
+  A->SetNumThreads(options_.num_threads);
   if (eliminator_.get() == NULL) {
     const int num_eliminate_blocks = options_.elimination_groups[0];
     const int num_f_blocks = bs->cols.size() - num_eliminate_blocks;

@@ -30,11 +30,13 @@
 
 #include "ceres/block_sparse_matrix.h"
 
-#include <cstddef>
 #include <algorithm>
+#include <cstddef>
 #include <vector>
+
 #include "ceres/block_structure.h"
 #include "ceres/internal/eigen.h"
+#include "ceres/parallel_for.h"
 #include "ceres/random.h"
 #include "ceres/small_blas.h"
 #include "ceres/triplet_sparse_matrix.h"
@@ -48,11 +50,16 @@ using std::vector;
 BlockSparseMatrix::~BlockSparseMatrix() {}
 
 BlockSparseMatrix::BlockSparseMatrix(
-    CompressedRowBlockStructure* block_structure)
+    CompressedRowBlockStructure* block_structure,
+    bool compute_col_structure,
+    ContextImpl* context,
+    int num_threads)
     : num_rows_(0),
       num_cols_(0),
       num_nonzeros_(0),
-      block_structure_(block_structure) {
+      block_structure_(block_structure),
+      context_(context),
+      num_threads_(num_threads) {
   CHECK(block_structure_ != nullptr);
 
   // Count the number of columns in the matrix.
@@ -82,49 +89,121 @@ BlockSparseMatrix::BlockSparseMatrix(
   values_.reset(new double[num_nonzeros_]);
   max_num_nonzeros_ = num_nonzeros_;
   CHECK(values_ != nullptr);
+
+  // Compute compressed column block structure
+  if (compute_col_structure) {
+    ComputeColumnBlockStructure();
+  }
 }
+
+void BlockSparseMatrix::ComputeColumnBlockStructure() {
+  if (block_structure_columns_) {
+    return;
+  }
+  int num_col_blocks = block_structure_->cols.size();
+  int num_row_blocks = block_structure_->rows.size();
+
+  block_structure_columns_.reset(new CompressedColumnBlockStructure);
+  block_structure_columns_->rows.resize(num_row_blocks);
+  block_structure_columns_->cols.resize(num_col_blocks);
+  for (int i = 0; i < num_col_blocks; ++i) {
+    block_structure_columns_->cols[i].block = block_structure_->cols[i];
+  }
+
+  for (int i = 0; i < num_row_blocks; ++i) {
+    block_structure_columns_->rows[i] = block_structure_->rows[i].block;
+    const auto& b = block_structure_->rows[i];
+    int row_block_id = i;
+    for (auto& c : b.cells) {
+      int col_block_id = c.block_id;
+      int position = c.position;
+      block_structure_columns_->cols[col_block_id].cells.emplace_back(
+          row_block_id, position);
+    }
+  }
+}
+
+void BlockSparseMatrix::SetContext(ContextImpl* context) { context_ = context; }
+
+ContextImpl* BlockSparseMatrix::GetContext() const { return context_; }
+
+void BlockSparseMatrix::SetNumThreads(int num_threads) {
+  num_threads_ = num_threads;
+}
+
+int BlockSparseMatrix::GetNumThreads() const { return num_threads_; }
 
 void BlockSparseMatrix::SetZero() {
   std::fill(values_.get(), values_.get() + num_nonzeros_, 0.0);
 }
 
-void BlockSparseMatrix::RightMultiply(const double* x,  double* y) const {
+void BlockSparseMatrix::RightMultiply(const double* x, double* y) const {
   CHECK(x != nullptr);
   CHECK(y != nullptr);
 
-  for (int i = 0; i < block_structure_->rows.size(); ++i) {
-    int row_block_pos = block_structure_->rows[i].block.position;
-    int row_block_size = block_structure_->rows[i].block.size;
-    const vector<Cell>& cells = block_structure_->rows[i].cells;
-    for (int j = 0; j < cells.size(); ++j) {
-      int col_block_id = cells[j].block_id;
-      int col_block_size = block_structure_->cols[col_block_id].size;
-      int col_block_pos = block_structure_->cols[col_block_id].position;
-      MatrixVectorMultiply<Eigen::Dynamic, Eigen::Dynamic, 1>(
-          values_.get() + cells[j].position, row_block_size, col_block_size,
-          x + col_block_pos,
-          y + row_block_pos);
+  if (!context_) {
+    for (int i = 0; i < block_structure_->rows.size(); ++i) {
+      RightMultiplyBlock(i, x, y);
     }
+  } else {
+    ParallelFor(
+        context_, 0, block_structure_->rows.size(), num_threads_, [&](int i) {
+          RightMultiplyBlock(i, x, y);
+        });
+  }
+}
+
+void BlockSparseMatrix::RightMultiplyBlock(int row_block,
+                                           const double* x,
+                                           double* y) const {
+  int row_block_pos = block_structure_->rows[row_block].block.position;
+  int row_block_size = block_structure_->rows[row_block].block.size;
+  const vector<Cell>& cells = block_structure_->rows[row_block].cells;
+  for (int j = 0; j < cells.size(); ++j) {
+    int col_block_id = cells[j].block_id;
+    int col_block_size = block_structure_->cols[col_block_id].size;
+    int col_block_pos = block_structure_->cols[col_block_id].position;
+    MatrixVectorMultiply<Eigen::Dynamic, Eigen::Dynamic, 1>(
+        values_.get() + cells[j].position,
+        row_block_size,
+        col_block_size,
+        x + col_block_pos,
+        y + row_block_pos);
   }
 }
 
 void BlockSparseMatrix::LeftMultiply(const double* x, double* y) const {
   CHECK(x != nullptr);
   CHECK(y != nullptr);
-
-  for (int i = 0; i < block_structure_->rows.size(); ++i) {
-    int row_block_pos = block_structure_->rows[i].block.position;
-    int row_block_size = block_structure_->rows[i].block.size;
-    const vector<Cell>& cells = block_structure_->rows[i].cells;
-    for (int j = 0; j < cells.size(); ++j) {
-      int col_block_id = cells[j].block_id;
-      int col_block_size = block_structure_->cols[col_block_id].size;
-      int col_block_pos = block_structure_->cols[col_block_id].position;
-      MatrixTransposeVectorMultiply<Eigen::Dynamic, Eigen::Dynamic, 1>(
-          values_.get() + cells[j].position, row_block_size, col_block_size,
-          x + row_block_pos,
-          y + col_block_pos);
+  if (!context_) {
+    for (int i = 0; i < block_structure_columns_->cols.size(); ++i) {
+      LeftMultiplyBlock(i, x, y);
     }
+  } else {
+    ParallelFor(context_,
+                0,
+                block_structure_columns_->cols.size(),
+                num_threads_,
+                [&](int i) { LeftMultiplyBlock(i, x, y); });
+  }
+}
+
+void BlockSparseMatrix::LeftMultiplyBlock(int col_block,
+                                          const double* x,
+                                          double* y) const {
+  int col_block_pos = block_structure_columns_->cols[col_block].block.position;
+  int col_block_size = block_structure_columns_->cols[col_block].block.size;
+  const vector<Cell>& cells = block_structure_columns_->cols[col_block].cells;
+  for (int j = 0; j < cells.size(); ++j) {
+    int row_block_id = cells[j].block_id;
+    int row_block_size = block_structure_columns_->rows[row_block_id].size;
+    int row_block_pos = block_structure_columns_->rows[row_block_id].position;
+    MatrixTransposeVectorMultiply<Eigen::Dynamic, Eigen::Dynamic, 1>(
+        values_.get() + cells[j].position,
+        row_block_size,
+        col_block_size,
+        x + row_block_pos,
+        y + col_block_pos);
   }
 }
 
@@ -219,6 +298,10 @@ const CompressedRowBlockStructure* BlockSparseMatrix::block_structure()
     const {
   return block_structure_.get();
 }
+const CompressedColumnBlockStructure*
+BlockSparseMatrix::block_structure_columns() const {
+  return block_structure_columns_.get();
+}
 
 void BlockSparseMatrix::ToTextFile(FILE* file) const {
   CHECK(file != nullptr);
@@ -298,7 +381,18 @@ void BlockSparseMatrix::AppendRows(const BlockSparseMatrix& m) {
       const int block_id = m_row.cells[c].block_id;
       row.cells[c].block_id = block_id;
       row.cells[c].position = num_nonzeros_;
+
+      if (block_structure_columns_) {
+        block_structure_columns_->cols[block_id].cells.emplace_back(
+            old_num_row_blocks + i, num_nonzeros_);
+      }
+
       num_nonzeros_ += m_row.block.size * m_bs->cols[block_id].size;
+    }
+
+    if (block_structure_columns_) {
+      block_structure_columns_->rows.emplace_back(row.block.size,
+                                                  row.block.position);
     }
   }
 
@@ -329,7 +423,35 @@ void BlockSparseMatrix::DeleteRowBlocks(const int delta_row_blocks) {
   }
   num_nonzeros_ -= delta_num_nonzeros;
   num_rows_ -= delta_num_rows;
-  block_structure_->rows.resize(num_row_blocks - delta_row_blocks);
+  const int num_row_blocks_after = num_row_blocks - delta_row_blocks;
+
+  int delta_num_nonzeros_cols = 0;
+  if (block_structure_columns_) {
+    for (int i = 0; i < block_structure_columns_->cols.size(); ++i) {
+      auto& cells = block_structure_columns_->cols[i].cells;
+      auto first_to_remove =
+          std::lower_bound(cells.begin(),
+                           cells.end(),
+                           num_row_blocks_after,
+                           [](const Cell& cell, int row_blocks) {
+                             return cell.block_id < row_blocks;
+                           });
+      if (first_to_remove == cells.end()) {
+        continue;
+      }
+
+      for (auto ci = first_to_remove; ci != cells.end(); ++ci)
+        delta_num_nonzeros_cols +=
+            block_structure_columns_->rows[ci->block_id].size *
+            block_structure_columns_->cols[i].block.size;
+
+      int size = std::distance(cells.begin(), first_to_remove);
+      cells.resize(size);
+    }
+    block_structure_columns_->rows.resize(num_row_blocks_after);
+  }
+  block_structure_->rows.resize(num_row_blocks_after);
+  CHECK_EQ(delta_num_nonzeros_cols, delta_num_nonzeros);
 }
 
 BlockSparseMatrix* BlockSparseMatrix::CreateRandomMatrix(
@@ -369,7 +491,6 @@ BlockSparseMatrix* BlockSparseMatrix::CreateRandomMatrix(
     int row_block_position = 0;
     int value_position = 0;
     for (int r = 0; r < options.num_row_blocks; ++r) {
-
       const int delta_block_size =
           Uniform(options.max_row_block_size - options.min_row_block_size);
       const int row_block_size = options.min_row_block_size + delta_block_size;
