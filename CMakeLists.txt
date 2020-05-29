@@ -35,7 +35,6 @@ cmake_policy(VERSION 3.5)
 # Set the C++ version (must be >= C++14) when compiling Ceres.
 #
 # Reflect a user-specified (via -D) CMAKE_CXX_STANDARD if present, otherwise
-# default to C++14.
 set(DEFAULT_CXX_STANDARD ${CMAKE_CXX_STANDARD})
 if (NOT DEFAULT_CXX_STANDARD)
   set(DEFAULT_CXX_STANDARD 14)
@@ -145,6 +144,8 @@ option(MINIGLOG "Use a stripped down version of glog." OFF)
 option(GFLAGS "Enable Google Flags." ON)
 option(SUITESPARSE "Enable SuiteSparse." ON)
 option(CXSPARSE "Enable CXSparse." ON)
+option(NATIVE_OPTIMIZATION "Optimize for host CPU" ON)
+set(TARGET_ARCHITECTURE "-march=native" CACHE STRING "Taget architecture option")
 if (APPLE)
   option(ACCELERATESPARSE
     "Enable use of sparse solvers in Apple's Accelerate framework." ON)
@@ -367,6 +368,12 @@ if (NOT SUITESPARSE AND NOT CXSPARSE AND NOT EIGENSPARSE AND NOT ACCELERATESPARS
   message("   will be available when Ceres is used.")
   message("   ===============================================================")
 endif()
+
+if (NATIVE_OPTIMIZATION)
+  message("-- Enabling architecture-specific optimizations with ${TARGET_ARCHITECTURE}")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TARGET_ARCHITECTURE}")
+endif()
+
 
 # ANDROID define is set by the Android CMake toolchain file.
 if (ANDROID)
