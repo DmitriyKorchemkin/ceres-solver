@@ -165,6 +165,26 @@ TEST_F(BlockSparseMatrixTest, AppendAndDeleteBlockDiagonalMatrix) {
     EXPECT_LT((y_a.tail(A_->num_cols()) - expected_tail).norm(), 1e-12);
   }
 
+  y_a.resize(A_->num_cols());
+  y_b.resize(A_->num_cols());
+  for (int i = 0; i < A_->num_rows(); ++i) {
+    Vector x = Vector::Zero(A_->num_rows());
+    x[i] = 1.0;
+    y_a.setZero();
+    y_b.setZero();
+
+    A_->LeftMultiply(x.data(), y_a.data());
+    B_->LeftMultiply(x.data(), y_b.data());
+
+    if (i < B_->num_rows()) {
+      EXPECT_LT((y_a - y_b).norm(), 1e-12);
+    } else {
+      int non_zero_id = i - B_->num_rows();
+      EXPECT_EQ(y_a(non_zero_id), diagonal(non_zero_id));
+      y_a(non_zero_id) = 0.;
+      EXPECT_EQ(y_a.norm(), 0.);
+    }
+  }
 
   A_->DeleteRowBlocks(column_blocks.size());
   EXPECT_EQ(A_->num_rows(), B_->num_rows());
@@ -180,6 +200,19 @@ TEST_F(BlockSparseMatrixTest, AppendAndDeleteBlockDiagonalMatrix) {
 
     A_->RightMultiply(x.data(), y_a.data());
     B_->RightMultiply(x.data(), y_b.data());
+    EXPECT_LT((y_a - y_b).norm(), 1e-12);
+  }
+
+  y_a.resize(A_->num_cols());
+  y_b.resize(A_->num_cols());
+  for (int i = 0; i < A_->num_rows(); ++i) {
+    Vector x = Vector::Zero(A_->num_rows());
+    x[i] = 1.0;
+    y_a.setZero();
+    y_b.setZero();
+
+    A_->LeftMultiply(x.data(), y_a.data());
+    B_->LeftMultiply(x.data(), y_b.data());
     EXPECT_LT((y_a - y_b).norm(), 1e-12);
   }
 }

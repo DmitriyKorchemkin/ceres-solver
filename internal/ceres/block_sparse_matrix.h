@@ -35,9 +35,11 @@
 #define CERES_INTERNAL_BLOCK_SPARSE_MATRIX_H_
 
 #include <memory>
+
 #include "ceres/block_structure.h"
-#include "ceres/sparse_matrix.h"
+#include "ceres/context_impl.h"
 #include "ceres/internal/eigen.h"
+#include "ceres/sparse_matrix.h"
 
 namespace ceres {
 namespace internal {
@@ -60,7 +62,10 @@ class BlockSparseMatrix : public SparseMatrix {
   //
   // TODO(sameeragarwal): Add a function which will validate legal
   // CompressedRowBlockStructure objects.
-  explicit BlockSparseMatrix(CompressedRowBlockStructure* block_structure);
+  explicit BlockSparseMatrix(CompressedRowBlockStructure* block_structure,
+                             bool compute_col_structure = true,
+                             ContextImpl* context = nullptr,
+                             int num_threads = 1);
 
   BlockSparseMatrix();
   BlockSparseMatrix(const BlockSparseMatrix&) = delete;
@@ -85,6 +90,7 @@ class BlockSparseMatrix : public SparseMatrix {
 
   void ToTripletSparseMatrix(TripletSparseMatrix* matrix) const;
   const CompressedRowBlockStructure* block_structure() const;
+  const CompressedColumnBlockStructure* block_structure_columns() const;
 
   // Append the contents of m to the bottom of this matrix. m must
   // have the same column blocks structure as this matrix.
@@ -92,6 +98,17 @@ class BlockSparseMatrix : public SparseMatrix {
 
   // Delete the bottom delta_rows_blocks.
   void DeleteRowBlocks(int delta_row_blocks);
+
+  // Compute column-block structure
+  void ComputeColumnBlockStructure();
+
+  // Replace context
+  void SetContext(ContextImpl* context);
+  ContextImpl* GetContext() const;
+
+  // Set num threads
+  void SetNumThreads(int num_threads);
+  int GetNumThreads() const;
 
   static BlockSparseMatrix* CreateDiagonalMatrix(
       const double* diagonal,
@@ -125,12 +142,19 @@ class BlockSparseMatrix : public SparseMatrix {
       const RandomMatrixOptions& options);
 
  private:
+  void LeftMultiplyBlock(int col_block, const double* x, double* y) const;
+  void RightMultiplyBlock(int row_block, const double* x, double* y) const;
+
   int num_rows_;
   int num_cols_;
   int num_nonzeros_;
   int max_num_nonzeros_;
   std::unique_ptr<double[]> values_;
   std::unique_ptr<CompressedRowBlockStructure> block_structure_;
+  std::unique_ptr<CompressedColumnBlockStructure> block_structure_columns_;
+
+  int num_threads_;
+  ContextImpl* context_;
 };
 
 // A number of algorithms like the SchurEliminator do not need
