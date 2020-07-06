@@ -86,7 +86,9 @@ class BlockSparseMatrix : public SparseMatrix {
   int num_cols()         const final { return num_cols_;     }
   int num_nonzeros()     const final { return num_nonzeros_; }
   const double* values() const final { return values_.get(); }
-  double* mutable_values()     final { return values_.get(); }
+  double* mutable_values() final {
+    return values_.get();
+  }
 
   void ToTripletSparseMatrix(TripletSparseMatrix* matrix) const;
   const CompressedRowBlockStructure* block_structure() const;

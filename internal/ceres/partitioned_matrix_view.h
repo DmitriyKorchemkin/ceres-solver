@@ -113,6 +113,7 @@ template <int kRowBlockSize = Eigen::Dynamic,
           int kEBlockSize = Eigen::Dynamic,
           int kFBlockSize = Eigen::Dynamic >
 class PartitionedMatrixView : public PartitionedMatrixViewBase {
+
  public:
   // matrix = [E F], where the matrix E contains the first
   // num_col_blocks_a column blocks.
@@ -135,6 +136,60 @@ class PartitionedMatrixView : public PartitionedMatrixViewBase {
   int num_cols()         const final { return matrix_.num_cols(); }
 
  private:
+  void LeftMultiplyE_sequential_row(const double* x, double* y) const;
+  void LeftMultiplyE_sequential_col(const double* x, double* y) const;
+  void LeftMultiplyE_parallel_col(const double* x, double* y) const;
+  void LeftMultiplyE_parallel_row(const double* x, double* y) const;
+  void LeftMultiplyE_sequential_col_transpose(const double* x, double* y) const;
+  void LeftMultiplyE_parallel_col_transpose(const double* x, double* y) const;
+  void LeftMultiplyE_sequential_col_prefetch(const double* x, double* y) const;
+  void LeftMultiplyE_parallel_col_prefetch(const double* x, double* y) const;
+
+  void LeftMultiplyF_sequential_row(const double* x, double* y) const;
+  void LeftMultiplyF_sequential_col(const double* x, double* y) const;
+  void LeftMultiplyF_parallel_col(const double* x, double* y) const;
+  void LeftMultiplyF_parallel_row(const double* x, double* y) const;
+  void LeftMultiplyF_sequential_col_transpose(const double* x, double* y) const;
+  void LeftMultiplyF_parallel_col_transpose(const double* x, double* y) const;
+  void LeftMultiplyF_sequential_col_prefetch(const double* x, double* y) const;
+  void LeftMultiplyF_parallel_col_prefetch(const double* x, double* y) const;
+
+  void RightMultiplyE_sequential_row(const double* x, double* y) const;
+  void RightMultiplyE_parallel_row(const double* x, double* y) const;
+
+  void RightMultiplyF_sequential_row(const double* x, double* y) const;
+  void RightMultiplyF_parallel_row(const double* x, double* y) const;
+
+  void UpdateBlockDiagonalEtE_sequential_row(
+      BlockSparseMatrix* block_diagonal) const;
+  void UpdateBlockDiagonalEtE_sequential_col(
+      BlockSparseMatrix* block_diagonal) const;
+  void UpdateBlockDiagonalEtE_parallel_col(
+      BlockSparseMatrix* block_diagonal) const;
+  void UpdateBlockDiagonalEtE_parallel_col_transpose(
+      BlockSparseMatrix* block_diagonal) const;
+  void UpdateBlockDiagonalEtE_sequential_col_transpose(
+      BlockSparseMatrix* block_diagonal) const;
+  void UpdateBlockDiagonalEtE_parallel_col_prefetch(
+      BlockSparseMatrix* block_diagonal) const;
+  void UpdateBlockDiagonalEtE_sequential_col_prefetch(
+      BlockSparseMatrix* block_diagonal) const;
+
+  void UpdateBlockDiagonalFtF_sequential_row(
+      BlockSparseMatrix* block_diagonal) const;
+  void UpdateBlockDiagonalFtF_sequential_col(
+      BlockSparseMatrix* block_diagonal) const;
+  void UpdateBlockDiagonalFtF_parallel_col(
+      BlockSparseMatrix* block_diagonal) const;
+  void UpdateBlockDiagonalFtF_parallel_col_transpose(
+      BlockSparseMatrix* block_diagonal) const;
+  void UpdateBlockDiagonalFtF_sequential_col_transpose(
+      BlockSparseMatrix* block_diagonal) const;
+  void UpdateBlockDiagonalFtF_parallel_col_prefetch(
+      BlockSparseMatrix* block_diagonal) const;
+  void UpdateBlockDiagonalFtF_sequential_col_prefetch(
+      BlockSparseMatrix* block_diagonal) const;
+
   BlockSparseMatrix* CreateBlockDiagonalMatrixLayout(int start_col_block,
                                                      int end_col_block) const;
 

@@ -406,6 +406,7 @@ void BlockSparseMatrix::AppendRows(const BlockSparseMatrix& m) {
   std::copy(m.values(),
             m.values() + m.num_nonzeros(),
             values_.get() + old_num_nonzeros);
+
 }
 
 void BlockSparseMatrix::DeleteRowBlocks(const int delta_row_blocks) {
