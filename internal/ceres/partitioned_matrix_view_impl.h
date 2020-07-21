@@ -161,7 +161,7 @@ RightMultiplyE(const double* x, double* y) const {
                 });
     auto parallel = timer.lap();
     
-      std::cout << '\n' << "ISB:" <<  __FUNCTION__ << ' ' << sequential.first <<' ' << sequential.second  << " " << parallel.first << " " << parallel.second <<  '\n';
+      std::cout << '\n' << "ISB:" << num_rows() << 'x' << num_cols() << " " << num_cols_e() << " " << num_cols_f() << " " <<  __FUNCTION__ << ' ' << sequential.first <<' ' << sequential.second  << " " << parallel.first << " " << parallel.second <<  '\n';
   }
 }
 
@@ -294,7 +294,7 @@ RightMultiplyF(const double* x, double* y) const {
                   }
                 });
     auto parallel = timer.lap();
-      std::cout << '\n' << "ISB:" <<  __FUNCTION__ << ' ' << sequential.first <<' ' << sequential.second  << " " << parallel.first << " " << parallel.second <<  '\n';
+      std::cout << '\n' << "ISB:" << num_rows() << 'x' << num_cols() << " " << num_cols_e() << " " << num_cols_f() << " " <<  __FUNCTION__ << ' ' << sequential.first <<' ' << sequential.second  << " " << parallel.first << " " << parallel.second <<  '\n';
   }
 }
 
@@ -351,6 +351,28 @@ LeftMultiplyE(const double* x, double* y) const {
           y + col_block_pos);
     }
     auto sequential = timer.lap();
+    memcpy(foo.get(), y, sizeof(double)*num_cols_e());
+    for (int c= 0; c < num_col_blocks_e_; ++c) {
+          const int col_block_pos = cs->cols[c].block.position;
+          const int col_block_size = cs->cols[c].block.size;
+          for (auto& cell : cs->cols[c].cells) {
+            const int row_block_id = cell.block_id;
+            const int row_block_size = cs->rows[row_block_id].size;
+            const int row_block_pos = cs->rows[row_block_id].position;
+
+            MatrixTransposeVectorMultiply<kRowBlockSize, kEBlockSize, 1>(
+                values + cell.position,
+                row_block_size,
+                col_block_size,
+                x + row_block_pos,
+                foo.get() + col_block_pos);
+          }
+        }
+
+
+    auto colbased = timer.lap();
+
+
     ParallelFor(
         matrix_.GetContext(),
         0,
@@ -373,7 +395,7 @@ LeftMultiplyE(const double* x, double* y) const {
           }
         });
     auto parallel = timer.lap();
-      std::cout << '\n' << "ISB:" <<  __FUNCTION__ << ' ' << sequential.first <<' ' << sequential.second  << " " << parallel.first << " " << parallel.second <<  '\n';
+      std::cout << '\n' << "ISB:" << num_rows() << 'x' << num_cols() << " " << num_cols_e() << " " << num_cols_f() << " " <<  __FUNCTION__ << ' ' << sequential.first <<' ' << sequential.second  << " " << parallel.first << " " << parallel.second << " " << colbased.first << " " << colbased.second << std::endl;
   }
 }
 
@@ -465,6 +487,34 @@ LeftMultiplyF(const double* x, double* y) const {
       }
     }
     auto sequential = timer.lap();
+    for (int c =        num_col_blocks_e_; c < 
+        cs->cols.size(); ++c) {
+          const int col_block_pos = cs->cols[c].block.position;
+          const int col_block_size = cs->cols[c].block.size;
+          for (auto& cell : cs->cols[c].cells) {
+            const int row_block_id = cell.block_id;
+            const int row_block_size = cs->rows[row_block_id].size;
+            const int row_block_pos = cs->rows[row_block_id].position;
+
+            if (row_block_id < num_row_blocks_e_) {
+              MatrixTransposeVectorMultiply<kRowBlockSize, kFBlockSize, 1>(
+                  values + cell.position,
+                  row_block_size,
+                  col_block_size,
+                  x + row_block_pos,
+                  foo.get() + col_block_pos - num_cols_e_);
+            } else {
+              MatrixTransposeVectorMultiply<Eigen::Dynamic, Eigen::Dynamic, 1>(
+                  values + cell.position,
+                  row_block_size,
+                  col_block_size,
+                  x + row_block_pos,
+                  foo.get() + col_block_pos - num_cols_e_);
+            }
+          }
+        }
+
+    auto colbased = timer.lap();
     ParallelFor(
         matrix_.GetContext(),
         num_col_blocks_e_,
@@ -496,7 +546,7 @@ LeftMultiplyF(const double* x, double* y) const {
           }
         });
     auto parallel = timer.lap();
-      std::cout << '\n' << "ISB:" <<  __FUNCTION__ << ' ' << sequential.first <<' ' << sequential.second  << " " << parallel.first << " " << parallel.second <<  '\n';
+      std::cout << '\n' << "ISB:" << num_rows() << 'x' << num_cols() << " " << num_cols_e() << " " << num_cols_f() << " " <<  __FUNCTION__ << ' ' << sequential.first <<' ' << sequential.second  << " " << parallel.first << " " << parallel.second <<  " " << colbased.first << " " << colbased.second <<  '\n';
   }
 }
 
@@ -635,9 +685,42 @@ void PartitionedMatrixView<kRowBlockSize, kEBlockSize, kFBlockSize>::
           col_block_size);
     }
     block_diagonal->SetZero();
-    auto sequential = timer.lap();
     const CompressedColumnBlockStructure* cs =
         matrix_.block_structure_columns();
+    auto sequential = timer.lap();
+    for (int c = 
+                0; c < 
+                num_col_blocks_e_; ++c) {
+                  const int col_block_pos = cs->cols[c].block.position;
+                  const int col_block_size = cs->cols[c].block.size;
+                  for (auto& cell : cs->cols[c].cells) {
+                    const int row_block_id = cell.block_id;
+                    const int row_block_size = cs->rows[row_block_id].size;
+                    const int row_block_pos = cs->rows[row_block_id].position;
+                    const int cell_position =
+                        block_diagonal_structure->rows[c].cells[0].position;
+
+                    MatrixTransposeMatrixMultiply<kRowBlockSize,
+                                                  kEBlockSize,
+                                                  kRowBlockSize,
+                                                  kEBlockSize,
+                                                  1>(
+                        values + cell.position,
+                        row_block_size,
+                        col_block_size,
+                        values + cell.position,
+                        row_block_size,
+                        col_block_size,
+                        block_diagonal->mutable_values() + cell_position,
+                        0,
+                        0,
+                        col_block_size,
+                        col_block_size);
+                  }
+                }
+    block_diagonal->SetZero();
+
+    auto colbased = timer.lap();
     ParallelFor(matrix_.GetContext(),
                 0,
                 num_col_blocks_e_,
@@ -671,7 +754,7 @@ void PartitionedMatrixView<kRowBlockSize, kEBlockSize, kFBlockSize>::
                   }
                 });
     auto parallel = timer.lap();
-      std::cout << '\n' << "ISB:" <<  __FUNCTION__ << ' ' << sequential.first <<' ' << sequential.second  << " " << parallel.first << " " << parallel.second <<  '\n';
+      std::cout << '\n' << "ISB:" << num_rows() << 'x' << num_cols() << " " << num_cols_e() << " " << num_cols_f() << " " <<  __FUNCTION__ << ' ' << sequential.first <<' ' << sequential.second  << " " << parallel.first << " " << parallel.second << " " << colbased.first << " " << colbased.second << '\n';
   }
 }
 
@@ -814,6 +897,61 @@ UpdateBlockDiagonalFtF(BlockSparseMatrix* block_diagonal) const {
     block_diagonal->SetZero();
     const CompressedColumnBlockStructure* cs =
         matrix_.block_structure_columns();
+
+
+    for (int c = num_col_blocks_e_; c < cs->cols.size(); ++c) {
+                  const int col_block_pos = cs->cols[c].block.position;
+                  const int col_block_size = cs->cols[c].block.size;
+                  const int diagonal_block_id = c - num_col_blocks_e_;
+                  const int cell_position =
+                      block_diagonal_structure->rows[diagonal_block_id]
+                          .cells[0]
+                          .position;
+                  for (auto& cell : cs->cols[c].cells) {
+                    const int row_block_id = cell.block_id;
+                    const int row_block_size = cs->rows[row_block_id].size;
+                    const int row_block_pos = cs->rows[row_block_id].position;
+
+                    if (row_block_id < num_row_blocks_e_) {
+                      MatrixTransposeMatrixMultiply<kRowBlockSize,
+                                                    kFBlockSize,
+                                                    kRowBlockSize,
+                                                    kFBlockSize,
+                                                    1>(
+                          values + cell.position,
+                          row_block_size,
+                          col_block_size,
+                          values + cell.position,
+                          row_block_size,
+                          col_block_size,
+                          block_diagonal->mutable_values() + cell_position,
+                          0,
+                          0,
+                          col_block_size,
+                          col_block_size);
+                    } else {
+                      MatrixTransposeMatrixMultiply<Eigen::Dynamic,
+                                                    Eigen::Dynamic,
+                                                    Eigen::Dynamic,
+                                                    Eigen::Dynamic,
+                                                    1>(
+                          values + cell.position,
+                          row_block_size,
+                          col_block_size,
+                          values + cell.position,
+                          row_block_size,
+                          col_block_size,
+                          block_diagonal->mutable_values() + cell_position,
+                          0,
+                          0,
+                          col_block_size,
+                          col_block_size);
+                    }
+                  }
+                };
+    auto colbased = timer.lap();
+
+    block_diagonal->SetZero();
     ParallelFor(matrix_.GetContext(),
                 num_col_blocks_e_,
                 cs->cols.size(),
@@ -869,7 +1007,7 @@ UpdateBlockDiagonalFtF(BlockSparseMatrix* block_diagonal) const {
                   }
                 });
     auto parallel = timer.lap();
-      std::cout << '\n' << "ISB:" <<  __FUNCTION__ << ' ' << sequential.first <<' ' << sequential.second  << " " << parallel.first << " " << parallel.second <<  '\n';
+      std::cout << '\n' << "ISB:" << num_rows() << 'x' << num_cols() << " " << num_cols_e() << " " << num_cols_f() << " " <<  __FUNCTION__ << ' ' << sequential.first <<' ' << sequential.second  << " " << parallel.first << " " << parallel.second <<  " " << colbased.first << " " << colbased.second << '\n';
   }
 }
 
