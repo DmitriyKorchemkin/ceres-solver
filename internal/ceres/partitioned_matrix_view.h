@@ -172,6 +172,48 @@ class PartitionedMatrixView : public PartitionedMatrixViewBase {
   int num_cols()         const final { return matrix_.num_cols(); }
 
  private:
+  void LeftMultiplyE_sequential_row(const double* x, double* y) const;
+  void LeftMultiplyE_sequential_col(const double* x, double* y) const;
+  void LeftMultiplyE_parallel_col(const double* x, double* y) const;
+  void LeftMultiplyE_parallel_row(const double* x, double* y) const;
+  void LeftMultiplyE_sequential_col_transpose(const double* x, double* y) const;
+  void LeftMultiplyE_parallel_col_transpose(const double* x, double* y) const;
+
+  void LeftMultiplyF_sequential_row(const double* x, double* y) const;
+  void LeftMultiplyF_sequential_col(const double* x, double* y) const;
+  void LeftMultiplyF_parallel_col(const double* x, double* y) const;
+  void LeftMultiplyF_parallel_row(const double* x, double* y) const;
+  void LeftMultiplyF_sequential_col_transpose(const double* x, double* y) const;
+  void LeftMultiplyF_parallel_col_transpose(const double* x, double* y) const;
+
+  void RightMultiplyE_sequential_row(const double* x, double* y) const;
+  void RightMultiplyE_parallel_row(const double* x, double* y) const;
+
+  void RightMultiplyF_sequential_row(const double* x, double* y) const;
+  void RightMultiplyF_parallel_row(const double* x, double* y) const;
+
+  void UpdateBlockDiagonalEtE_sequential_row(
+      BlockSparseMatrix* block_diagonal) const;
+  void UpdateBlockDiagonalEtE_sequential_col(
+      BlockSparseMatrix* block_diagonal) const;
+  void UpdateBlockDiagonalEtE_parallel_col(
+      BlockSparseMatrix* block_diagonal) const;
+  void UpdateBlockDiagonalEtE_parallel_col_transpose(
+      BlockSparseMatrix* block_diagonal) const;
+  void UpdateBlockDiagonalEtE_sequential_col_transpose(
+      BlockSparseMatrix* block_diagonal) const;
+
+  void UpdateBlockDiagonalFtF_sequential_row(
+      BlockSparseMatrix* block_diagonal) const;
+  void UpdateBlockDiagonalFtF_sequential_col(
+      BlockSparseMatrix* block_diagonal) const;
+  void UpdateBlockDiagonalFtF_parallel_col(
+      BlockSparseMatrix* block_diagonal) const;
+  void UpdateBlockDiagonalFtF_parallel_col_transpose(
+      BlockSparseMatrix* block_diagonal) const;
+  void UpdateBlockDiagonalFtF_sequential_col_transpose(
+      BlockSparseMatrix* block_diagonal) const;
+
   BlockSparseMatrix* CreateBlockDiagonalMatrixLayout(int start_col_block,
                                                      int end_col_block) const;
 

@@ -86,11 +86,18 @@ class BlockSparseMatrix : public SparseMatrix {
   int num_cols()         const final { return num_cols_;     }
   int num_nonzeros()     const final { return num_nonzeros_; }
   const double* values() const final { return values_.get(); }
-  double* mutable_values()     final { return values_.get(); }
+  const double* values_transpose() const { return values_transpose_.get(); }
+  double* mutable_values() final {
+    values_transpose_ = nullptr;
+    block_structure_columns_transpose_ = nullptr;
+    return values_.get();
+  }
 
   void ToTripletSparseMatrix(TripletSparseMatrix* matrix) const;
   const CompressedRowBlockStructure* block_structure() const;
   const CompressedColumnBlockStructure* block_structure_columns() const;
+  const CompressedColumnBlockStructure* block_structure_columns_transpose()
+      const;
 
   // Append the contents of m to the bottom of this matrix. m must
   // have the same column blocks structure as this matrix.
@@ -141,6 +148,8 @@ class BlockSparseMatrix : public SparseMatrix {
   static BlockSparseMatrix* CreateRandomMatrix(
       const RandomMatrixOptions& options);
 
+  void CreateTransposedStructure() const;
+
  private:
   void LeftMultiplyBlock(int col_block, const double* x, double* y) const;
   void RightMultiplyBlock(int row_block, const double* x, double* y) const;
@@ -150,8 +159,11 @@ class BlockSparseMatrix : public SparseMatrix {
   int num_nonzeros_;
   int max_num_nonzeros_;
   std::unique_ptr<double[]> values_;
+  mutable std::unique_ptr<double[]> values_transpose_;
   std::unique_ptr<CompressedRowBlockStructure> block_structure_;
   std::unique_ptr<CompressedColumnBlockStructure> block_structure_columns_;
+  mutable std::unique_ptr<CompressedColumnBlockStructure>
+      block_structure_columns_transpose_;
 
   int num_threads_;
   ContextImpl* context_;

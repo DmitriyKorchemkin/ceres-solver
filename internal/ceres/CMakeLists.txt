@@ -45,6 +45,7 @@ endif()
 set(CERES_INTERNAL_SRC
     ${CERES_PARALLEL_FOR_SRC}
     accelerate_sparse.cc
+    aggregate_sum.cc
     array_utils.cc
     blas.cc
     block_evaluate_preparer.cc

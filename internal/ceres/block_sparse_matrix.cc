@@ -123,6 +123,39 @@ void BlockSparseMatrix::ComputeColumnBlockStructure() {
   }
 }
 
+void BlockSparseMatrix::CreateTransposedStructure() const {
+  values_transpose_.reset(new double[max_num_nonzeros_]);
+
+  int num_col_blocks = block_structure_->cols.size();
+  int num_row_blocks = block_structure_->rows.size();
+
+  block_structure_columns_transpose_.reset(new CompressedColumnBlockStructure);
+  block_structure_columns_transpose_->rows = block_structure_columns_->rows;
+  block_structure_columns_transpose_->cols = block_structure_columns_->cols;
+  double* values_new = values_transpose_.get();
+  const double* values_old = values_.get();
+
+  // fill values in a transposed manner
+  int position = 0;
+  for (int i = 0; i < num_col_blocks; ++i) {
+    int col_block_id = i;
+    auto& b = block_structure_columns_transpose_->cols[i];
+    const int cols = b.block.size;
+    for (auto& c : b.cells) {
+      int row_block_id = c.block_id;
+      int position_orig = c.position;
+      int position_new = position;
+      int rows = block_structure_columns_transpose_->rows[row_block_id].size;
+      c.position = position_new;
+      position += rows * cols;
+      memcpy(values_new + c.position,
+             values_old + position_orig,
+             sizeof(double) * rows * cols);
+    }
+  }
+  CHECK(position == num_nonzeros_);
+}
+
 void BlockSparseMatrix::SetContext(ContextImpl* context) { context_ = context; }
 
 ContextImpl* BlockSparseMatrix::GetContext() const { return context_; }
@@ -302,6 +335,13 @@ const CompressedColumnBlockStructure*
 BlockSparseMatrix::block_structure_columns() const {
   return block_structure_columns_.get();
 }
+const CompressedColumnBlockStructure*
+BlockSparseMatrix::block_structure_columns_transpose() const {
+  if (!block_structure_columns_transpose_) {
+    CreateTransposedStructure();
+  }
+  return block_structure_columns_transpose_.get();
+}
 
 void BlockSparseMatrix::ToTextFile(FILE* file) const {
   CHECK(file != nullptr);
@@ -406,6 +446,10 @@ void BlockSparseMatrix::AppendRows(const BlockSparseMatrix& m) {
   std::copy(m.values(),
             m.values() + m.num_nonzeros(),
             values_.get() + old_num_nonzeros);
+
+  if (block_structure_columns_transpose_) {
+    CreateTransposedStructure();
+  }
 }
 
 void BlockSparseMatrix::DeleteRowBlocks(const int delta_row_blocks) {
@@ -452,6 +496,9 @@ void BlockSparseMatrix::DeleteRowBlocks(const int delta_row_blocks) {
   }
   block_structure_->rows.resize(num_row_blocks_after);
   CHECK_EQ(delta_num_nonzeros_cols, delta_num_nonzeros);
+  if (block_structure_columns_transpose_) {
+    CreateTransposedStructure();
+  }
 }
 
 BlockSparseMatrix* BlockSparseMatrix::CreateRandomMatrix(

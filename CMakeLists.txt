@@ -36,7 +36,7 @@ cmake_policy(VERSION 3.5)
 #
 # Reflect a user-specified (via -D) CMAKE_CXX_STANDARD if present, otherwise
 # default to C++11.
-#set(CMAKE_CXX_FLAGS "-march=native ${CMAKE_CXX_FLAGS}")
+set(CMAKE_CXX_FLAGS "-march=native ${CMAKE_CXX_FLAGS}")
 set(DEFAULT_CXX_STANDARD ${CMAKE_CXX_STANDARD})
 if (NOT DEFAULT_CXX_STANDARD)
   set(DEFAULT_CXX_STANDARD 11)
