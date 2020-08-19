@@ -29,7 +29,7 @@
 # Author: alexs.mac@gmail.com (Alex Stewart)
 
 # Ordered by expected preference.
-set(CERES_THREADING_MODELS "CXX11_THREADS;OPENMP;NO_THREADS")
+set(CERES_THREADING_MODELS "CXX11_THREADS;OPENMP;NO_THREADS;TBB")
 
 function(find_available_ceres_threading_models CERES_THREADING_MODELS_AVAILABLE_VAR)
   set(CERES_THREADING_MODELS_AVAILABLE ${CERES_THREADING_MODELS})
@@ -51,6 +51,10 @@ macro(set_ceres_threading_model_to_cxx11_threads)
   list(APPEND CERES_COMPILE_OPTIONS CERES_USE_CXX11_THREADS)
 endmacro()
 
+macro(set_ceres_threading_model_to_tbb)
+  list(APPEND CERES_COMPILE_OPTIONS CERES_USE_TBB)
+endmacro()
+
 macro(set_ceres_threading_model_to_openmp)
   find_package(OpenMP REQUIRED)
   list(APPEND CERES_COMPILE_OPTIONS CERES_USE_OPENMP)
@@ -67,6 +71,8 @@ macro(set_ceres_threading_model CERES_THREADING_MODEL_TO_SET)
     set_ceres_threading_model_to_cxx11_threads()
   elseif ("${CERES_THREADING_MODEL_TO_SET}" STREQUAL "OPENMP")
     set_ceres_threading_model_to_openmp()
+  elseif ("${CERES_THREADING_MODEL_TO_SET}" STREQUAL "TBB")
+    set_ceres_threading_model_to_tbb()
   elseif ("${CERES_THREADING_MODEL_TO_SET}" STREQUAL "NO_THREADS")
     set_ceres_threading_model_to_no_threads()
   else()

@@ -645,7 +645,7 @@ TEST_F(CovarianceTest, NormalBehavior) {
   ComputeAndCompareCovarianceBlocks(options, expected_covariance);
 }
 
-#ifdef CERES_USE_OPENMP
+#if defined(CERES_USE_OPENMP) || defined(CERES_USE_TBB)
 
 TEST_F(CovarianceTest, ThreadedNormalBehavior) {
   // J
@@ -1349,7 +1349,7 @@ class LargeScaleCovarianceTest : public ::testing::Test {
   vector<pair<const double*, const double*>> all_covariance_blocks_;
 };
 
-#if !defined(CERES_NO_SUITESPARSE) && defined(CERES_USE_OPENMP)
+#if !defined(CERES_NO_SUITESPARSE) && (defined(CERES_USE_OPENMP) || defined(CERES_USE_TBB))
 
 TEST_F(LargeScaleCovarianceTest, Parallel) {
   ComputeAndCompare(SPARSE_QR, SUITE_SPARSE, 4);
