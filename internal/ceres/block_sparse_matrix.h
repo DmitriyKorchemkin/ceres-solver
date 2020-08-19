@@ -92,6 +92,10 @@ class BlockSparseMatrix : public SparseMatrix {
     block_structure_columns_transpose_ = nullptr;
     return values_.get();
   }
+  void drop_transposed() const {
+    values_transpose_ = nullptr;
+    block_structure_columns_transpose_ = nullptr;
+  }
 
   void ToTripletSparseMatrix(TripletSparseMatrix* matrix) const;
   const CompressedRowBlockStructure* block_structure() const;

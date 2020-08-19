@@ -337,9 +337,6 @@ BlockSparseMatrix::block_structure_columns() const {
 }
 const CompressedColumnBlockStructure*
 BlockSparseMatrix::block_structure_columns_transpose() const {
-  if (!block_structure_columns_transpose_) {
-    CreateTransposedStructure();
-  }
   return block_structure_columns_transpose_.get();
 }
 
@@ -448,7 +445,8 @@ void BlockSparseMatrix::AppendRows(const BlockSparseMatrix& m) {
             values_.get() + old_num_nonzeros);
 
   if (block_structure_columns_transpose_) {
-    CreateTransposedStructure();
+    block_structure_columns_transpose_ = nullptr;
+    values_transpose_ = nullptr;
   }
 }
 
@@ -497,7 +495,8 @@ void BlockSparseMatrix::DeleteRowBlocks(const int delta_row_blocks) {
   block_structure_->rows.resize(num_row_blocks_after);
   CHECK_EQ(delta_num_nonzeros_cols, delta_num_nonzeros);
   if (block_structure_columns_transpose_) {
-    CreateTransposedStructure();
+    block_structure_columns_transpose_ = nullptr;
+    values_transpose_ = nullptr;
   }
 }
 

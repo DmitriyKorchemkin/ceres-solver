@@ -40,14 +40,12 @@
 #include <cstring>
 #include <vector>
 
+#include "ceres/auto_timer.h"
 #include "ceres/block_structure.h"
 #include "ceres/internal/eigen.h"
 #include "ceres/linear_solver.h"
 #include "ceres/small_blas.h"
 #include "glog/logging.h"
-
-#include <sys/time.h>
-#include <sys/resource.h>
 
 namespace ceres {
 namespace internal {
@@ -116,39 +114,6 @@ template <int kRowBlockSize = Eigen::Dynamic,
           int kEBlockSize = Eigen::Dynamic,
           int kFBlockSize = Eigen::Dynamic >
 class PartitionedMatrixView : public PartitionedMatrixViewBase {
-  struct AutoTimer {
-    AutoTimer() {
-      real = real_now();
-      user = user_now();
-    }
-
-    std::pair<double, double> lap() {
-      auto real_new = real_now();
-      auto user_new = user_now();
-
-      uint64_t d_real = (real_new - real).count();
-      uint64_t d_user = (user_new - user) * 1000;
-
-      real = real_new;
-      user = user_new;
-
-      return std::make_pair<double, double>(d_real, d_user);
-    }
-
-    std::chrono::steady_clock::time_point real_now() {
-      return std::chrono::steady_clock::now();
-    }
-
-    uint64_t user_now() {
-      struct rusage ru;
-      getrusage(RUSAGE_SELF, &ru);
-
-      return uint64_t(ru.ru_utime.tv_sec) * 1000000llu + ru.ru_utime.tv_usec;
-    }
-
-    std::chrono::steady_clock::time_point real;
-    uint64_t user;
-  };
 
  public:
   // matrix = [E F], where the matrix E contains the first
@@ -178,6 +143,8 @@ class PartitionedMatrixView : public PartitionedMatrixViewBase {
   void LeftMultiplyE_parallel_row(const double* x, double* y) const;
   void LeftMultiplyE_sequential_col_transpose(const double* x, double* y) const;
   void LeftMultiplyE_parallel_col_transpose(const double* x, double* y) const;
+  void LeftMultiplyE_sequential_col_prefetch(const double* x, double* y) const;
+  void LeftMultiplyE_parallel_col_prefetch(const double* x, double* y) const;
 
   void LeftMultiplyF_sequential_row(const double* x, double* y) const;
   void LeftMultiplyF_sequential_col(const double* x, double* y) const;
@@ -185,6 +152,8 @@ class PartitionedMatrixView : public PartitionedMatrixViewBase {
   void LeftMultiplyF_parallel_row(const double* x, double* y) const;
   void LeftMultiplyF_sequential_col_transpose(const double* x, double* y) const;
   void LeftMultiplyF_parallel_col_transpose(const double* x, double* y) const;
+  void LeftMultiplyF_sequential_col_prefetch(const double* x, double* y) const;
+  void LeftMultiplyF_parallel_col_prefetch(const double* x, double* y) const;
 
   void RightMultiplyE_sequential_row(const double* x, double* y) const;
   void RightMultiplyE_parallel_row(const double* x, double* y) const;
@@ -202,6 +171,10 @@ class PartitionedMatrixView : public PartitionedMatrixViewBase {
       BlockSparseMatrix* block_diagonal) const;
   void UpdateBlockDiagonalEtE_sequential_col_transpose(
       BlockSparseMatrix* block_diagonal) const;
+  void UpdateBlockDiagonalEtE_parallel_col_prefetch(
+      BlockSparseMatrix* block_diagonal) const;
+  void UpdateBlockDiagonalEtE_sequential_col_prefetch(
+      BlockSparseMatrix* block_diagonal) const;
 
   void UpdateBlockDiagonalFtF_sequential_row(
       BlockSparseMatrix* block_diagonal) const;
@@ -212,6 +185,10 @@ class PartitionedMatrixView : public PartitionedMatrixViewBase {
   void UpdateBlockDiagonalFtF_parallel_col_transpose(
       BlockSparseMatrix* block_diagonal) const;
   void UpdateBlockDiagonalFtF_sequential_col_transpose(
+      BlockSparseMatrix* block_diagonal) const;
+  void UpdateBlockDiagonalFtF_parallel_col_prefetch(
+      BlockSparseMatrix* block_diagonal) const;
+  void UpdateBlockDiagonalFtF_sequential_col_prefetch(
       BlockSparseMatrix* block_diagonal) const;
 
   BlockSparseMatrix* CreateBlockDiagonalMatrixLayout(int start_col_block,

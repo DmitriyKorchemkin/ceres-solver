@@ -30,6 +30,7 @@
 
 #include "ceres/schur_complement_solver.h"
 
+#include <iostream>
 #include <algorithm>
 #include <ctime>
 #include <memory>
@@ -52,6 +53,7 @@
 #include "ceres/triplet_sparse_matrix.h"
 #include "ceres/types.h"
 #include "ceres/wall_time.h"
+#include "ceres/auto_timer.h"
 
 namespace ceres {
 namespace internal {
@@ -386,6 +388,7 @@ SparseSchurComplementSolver::SolveReducedLinearSystemUsingConjugateGradients(
   BlockRandomAccessSparseMatrix* sc = down_cast<BlockRandomAccessSparseMatrix*>(
       const_cast<BlockRandomAccessMatrix*>(lhs()));
 
+  AutoTimer timer;
   // Extract block diagonal from the Schur complement to construct the
   // schur_jacobi preconditioner.
   for (int i = 0; i < blocks_.size(); ++i) {
@@ -406,7 +409,9 @@ SparseSchurComplementSolver::SolveReducedLinearSystemUsingConjugateGradients(
     pre_m.block(pre_r, pre_c, block_size, block_size) =
         sc_m.block(sc_r, sc_c, block_size, block_size);
   }
+  auto pre_setup = timer.lap();
   preconditioner_->Invert();
+  auto pre_invert = timer.lap();
 
   VectorRef(solution, num_rows).setZero();
 
@@ -425,8 +430,14 @@ SparseSchurComplementSolver::SolveReducedLinearSystemUsingConjugateGradients(
   cg_per_solve_options.q_tolerance = per_solve_options.q_tolerance;
   cg_per_solve_options.preconditioner = preconditioner_adapter.get();
 
-  return cg_solver.Solve(
+  auto res = cg_solver.Solve(
       lhs_adapter.get(), rhs(), cg_per_solve_options, solution);
+  auto solve = timer.lap();
+  std::cout << "SCCB: setup" << pre_setup.first << " " << pre_setup.second << std::endl;
+  std::cout << "SCCB: invert" << pre_invert.first << " " << pre_invert.second << std::endl;
+  std::cout << "SCCB: solve" << solve.first << " " << solve.second << std::endl;
+
+  return res;
 }
 
 }  // namespace internal

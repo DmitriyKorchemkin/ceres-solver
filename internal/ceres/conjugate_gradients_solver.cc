@@ -46,6 +46,8 @@
 #include "ceres/stringprintf.h"
 #include "ceres/types.h"
 #include "glog/logging.h"
+#include <iostream>
+#include "ceres/auto_timer.h"
 
 namespace ceres {
 namespace internal {
@@ -112,7 +114,9 @@ LinearSolver::Summary ConjugateGradientsSolver::Solve(
   // Initial value of the quadratic model Q = x'Ax - 2 * b'x.
   double Q0 = -1.0 * xref.dot(bref + r);
 
+
   for (summary.num_iterations = 1;; ++summary.num_iterations) {
+    AutoTimer timer;
     // Apply preconditioner
     if (per_solve_options.preconditioner != NULL) {
       z.setZero();
@@ -120,6 +124,7 @@ LinearSolver::Summary ConjugateGradientsSolver::Solve(
     } else {
       z = r;
     }
+    auto pre = timer.lap();
 
     double last_rho = rho;
     rho = r.dot(z);
@@ -128,6 +133,7 @@ LinearSolver::Summary ConjugateGradientsSolver::Solve(
       summary.message = StringPrintf("Numerical failure. rho = r'z = %e.", rho);
       break;
     }
+    auto rho_dot = timer.lap();
 
     if (summary.num_iterations == 1) {
       p = z;
@@ -146,7 +152,11 @@ LinearSolver::Summary ConjugateGradientsSolver::Solve(
     Vector& q = z;
     q.setZero();
     A->RightMultiply(p.data(), q.data());
+
+    auto apq_mul = timer.lap();
+
     const double pq = p.dot(q);
+    auto pq_dot = timer.lap();
     if ((pq <= 0) || std::isinf(pq)) {
       summary.termination_type = LINEAR_SOLVER_NO_CONVERGENCE;
       summary.message = StringPrintf(
@@ -166,6 +176,7 @@ LinearSolver::Summary ConjugateGradientsSolver::Solve(
     }
 
     xref = xref + alpha * p;
+    auto xref_update = timer.lap();
 
     // Ideally we would just use the update r = r - alpha*q to keep
     // track of the residual vector. However this estimate tends to
@@ -178,13 +189,16 @@ LinearSolver::Summary ConjugateGradientsSolver::Solve(
       tmp.setZero();
       A->RightMultiply(x, tmp.data());
       r = bref - tmp;
+      
     } else {
       r = r - alpha * q;
     }
+    auto res_update = timer.lap();
 
     // Quadratic model based termination.
     //   Q1 = x'Ax - 2 * b' x.
     const double Q1 = -1.0 * xref.dot(bref + r);
+    auto quad_check = timer.lap();
 
     // For PSD matrices A, let
     //
@@ -234,6 +248,16 @@ LinearSolver::Summary ConjugateGradientsSolver::Solve(
                        tol_r);
       break;
     }
+    auto res_term = timer.lap();
+    std::cout << "CGB: Preconditioner" << pre.first << " " << pre.second << std::endl;
+    std::cout << "CGB: r.dot(z)" << rho_dot.first << " " << rho_dot.second << std::endl;
+    std::cout << "CGB: q=Ap" << apq_mul.first << " " << apq_mul.second << std::endl;
+    std::cout << "CGB: p.dot(q)" << pq_dot.first << " " << pq_dot.second << std::endl;
+    std::cout << "CGB: x+=alpha p" << xref_update.first << " " << xref_update.second << std::endl;
+    std::cout << "CGB: r=r-alpha q" << res_update.first << " " << res_update.second << std::endl;
+    std::cout << "CGB: Q1=-x.dot(b+r)" << quad_check.first << " " << quad_check.second << std::endl;
+    std::cout << "CGB: normr = ||r||" << res_term.first << " " << res_term.second << std::endl;
+
 
     if (summary.num_iterations >= options_.max_num_iterations) {
       break;

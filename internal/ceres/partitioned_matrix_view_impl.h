@@ -164,8 +164,10 @@ void PartitionedMatrixView<kRowBlockSize, kEBlockSize, kFBlockSize>::
     std::unique_ptr<double[]> foo(new double[num_rows()]);
     memcpy(foo.get(), y, sizeof(double) * num_rows());
 
-    BENCH_TIMER(RightMultiplyE_parallel_row(x, foo.get()));
     BENCH_TIMER(RightMultiplyE_parallel_row(x, y));
+#ifdef BENCH
+    BENCH_TIMER(RightMultiplyE_sequential_row(x, foo.get()));
+#endif
   }
 }
 
@@ -280,7 +282,9 @@ void PartitionedMatrixView<kRowBlockSize, kEBlockSize, kFBlockSize>::
     std::unique_ptr<double[]> foo(new double[num_rows()]);
     memcpy(foo.get(), y, sizeof(double)*num_rows());
 
+#ifdef BENCH
     BENCH_TIMER(RightMultiplyF_sequential_row(x, foo.get()));
+#endif
     BENCH_TIMER(RightMultiplyF_parallel_row(x, y));
   }
 }
@@ -347,6 +351,95 @@ void PartitionedMatrixView<kRowBlockSize, kEBlockSize, kFBlockSize>::
                   const int row_block_id = cell.block_id;
                   const int row_block_size = cs->rows[row_block_id].size;
                   const int row_block_pos = cs->rows[row_block_id].position;
+
+                  MatrixTransposeVectorMultiply<kRowBlockSize, kEBlockSize, 1>(
+                      values + cell.position,
+                      row_block_size,
+                      col_block_size,
+                      x + row_block_pos,
+                      y + col_block_pos);
+                }
+              });
+}
+
+template <int kRowBlockSize, int kEBlockSize, int kFBlockSize>
+void PartitionedMatrixView<kRowBlockSize, kEBlockSize, kFBlockSize>::
+    LeftMultiplyE_sequential_col_prefetch(const double* x, double* y) const {
+  const double* values = matrix_.values();
+  const CompressedColumnBlockStructure* cs = matrix_.block_structure_columns();
+  for (int c = 0; c < num_col_blocks_e_; ++c) {
+    const int col_block_pos = cs->cols[c].block.position;
+    const int col_block_size = cs->cols[c].block.size;
+    int N = cs->cols[c].cells.size();
+
+    if (!N) {
+      continue;
+    }
+
+    int row_block_id, row_block_size, row_block_pos;
+    int row_block_id_next = cs->cols[c].cells[0].block_id;
+    int row_block_size_next = cs->rows[row_block_id_next].size;
+    int row_block_pos_next = cs->rows[row_block_id_next].position;
+
+    for (int i = 0; i < N; ++i) {
+      auto& cell = cs->cols[c].cells[i];
+      row_block_id = row_block_id_next;
+      row_block_size = row_block_size_next;
+      row_block_pos = row_block_pos_next;
+      if (i + 1 < N) {
+        const auto& next = cs->cols[c].cells[i + 1];
+        row_block_id_next = next.block_id;
+        row_block_size_next = cs->rows[row_block_id_next].size;
+        row_block_pos_next = cs->rows[row_block_id_next].position;
+        _mm_prefetch(values + next.position, _MM_HINT_T2);
+        _mm_prefetch(x + row_block_pos_next, _MM_HINT_T2);
+      }
+
+      MatrixTransposeVectorMultiply<kRowBlockSize, kEBlockSize, 1>(
+          values + cell.position,
+          row_block_size,
+          col_block_size,
+          x + row_block_pos,
+          y + col_block_pos);
+    }
+  }
+}
+template <int kRowBlockSize, int kEBlockSize, int kFBlockSize>
+void PartitionedMatrixView<kRowBlockSize, kEBlockSize, kFBlockSize>::
+    LeftMultiplyE_parallel_col_prefetch(const double* x, double* y) const {
+  const CompressedColumnBlockStructure* cs = matrix_.block_structure_columns();
+  const double* values = matrix_.values();
+  ParallelFor(matrix_.GetContext(),
+              0,
+              num_col_blocks_e_,
+              matrix_.GetNumThreads(),
+              [&](int c) {
+                const int col_block_pos = cs->cols[c].block.position;
+                const int col_block_size = cs->cols[c].block.size;
+                int N = cs->cols[c].cells.size();
+
+                if (!N) {
+                  return;
+                }
+
+                int row_block_id, row_block_size, row_block_pos;
+                int row_block_id_next = cs->cols[c].cells[0].block_id;
+                int row_block_size_next = cs->rows[row_block_id_next].size;
+                int row_block_pos_next = cs->rows[row_block_id_next].position;
+
+                for (int i = 0; i < N; ++i) {
+                  auto& cell = cs->cols[c].cells[i];
+                  row_block_id = row_block_id_next;
+                  row_block_size = row_block_size_next;
+                  row_block_pos = row_block_pos_next;
+                  if (i + 1 < N) {
+                    const auto& next = cs->cols[c].cells[i + 1];
+                    row_block_id_next = next.block_id;
+                    row_block_size_next = cs->rows[row_block_id_next].size;
+                    row_block_pos_next = cs->rows[row_block_id_next].position;
+                    _mm_prefetch(values + next.position, _MM_HINT_T2);
+                    _mm_prefetch(x + row_block_pos_next, _MM_HINT_T2);
+                  }
 
                   MatrixTransposeVectorMultiply<kRowBlockSize, kEBlockSize, 1>(
                       values + cell.position,
@@ -456,11 +549,11 @@ void PartitionedMatrixView<kRowBlockSize, kEBlockSize, kFBlockSize>::
 
   auto aggregate = timer.lap();
 
-  std::cout << "\nISB-A: " << __FUNCTION__ << ", " << matrix_.num_nonzeros()
+  std::cout << "\nISB-A: " << __FUNCTION__ << "-compute" << ", " << matrix_.num_nonzeros()
             << ", " << num_rows() << ", " << num_cols() << ", " << num_cols_e()
             << ", " << num_cols_f() << ", " << compute.first << ", "
             << compute.second << std::endl;
-  std::cout << "\nISB-A: " << __FUNCTION__ << ", " << matrix_.num_nonzeros()
+  std::cout << "\nISB-A: " << __FUNCTION__ << "-aggregate" << ", " << matrix_.num_nonzeros()
             << ", " << num_rows() << ", " << num_cols() << ", " << num_cols_e()
             << ", " << num_cols_f() << ", " << aggregate.first << ", "
             << aggregate.second << std::endl;
@@ -476,14 +569,20 @@ void PartitionedMatrixView<kRowBlockSize, kEBlockSize, kFBlockSize>::
     std::unique_ptr<double[]> foo(new double[num_cols_e()]);
     memcpy(foo.get(), y, sizeof(double) * num_cols_e());
 
-    void(matrix_.CreateTransposedStructure());
 
-    BENCH_TIMER(LeftMultiplyE_sequential_row(x, foo.get()));
-    BENCH_TIMER(LeftMultiplyE_sequential_col(x, foo.get()));
-    BENCH_TIMER(LeftMultiplyE_parallel_row(x, foo.get()));
-    BENCH_TIMER(LeftMultiplyE_sequential_col_transpose(x, foo.get()));
-    BENCH_TIMER(LeftMultiplyE_parallel_col_transpose(x, foo.get()));
     BENCH_TIMER(LeftMultiplyE_parallel_col(x, y));
+
+#ifdef BENCH
+    BENCH_TIMER(LeftMultiplyE_sequential_row(x, foo.get()));
+
+#ifdef BENCH_ALL
+    BENCH_TIMER(LeftMultiplyE_parallel_col_prefetch(x, foo.get()));
+
+    void(matrix_.CreateTransposedStructure());
+    BENCH_TIMER(LeftMultiplyE_parallel_col_transpose(x, foo.get()));
+    void(matrix_.drop_transposed());
+#endif
+#endif
   }
 }
 
@@ -579,6 +678,114 @@ void PartitionedMatrixView<kRowBlockSize, kEBlockSize, kFBlockSize>::
           const int row_block_id = cell.block_id;
           const int row_block_size = cs->rows[row_block_id].size;
           const int row_block_pos = cs->rows[row_block_id].position;
+
+          if (row_block_id < num_row_blocks_e_) {
+            MatrixTransposeVectorMultiply<kRowBlockSize, kFBlockSize, 1>(
+                values + cell.position,
+                row_block_size,
+                col_block_size,
+                x + row_block_pos,
+                y + col_block_pos - num_cols_e_);
+          } else {
+            MatrixTransposeVectorMultiply<Eigen::Dynamic, Eigen::Dynamic, 1>(
+                values + cell.position,
+                row_block_size,
+                col_block_size,
+                x + row_block_pos,
+                y + col_block_pos - num_cols_e_);
+          }
+        }
+      });
+}
+template <int kRowBlockSize, int kEBlockSize, int kFBlockSize>
+void PartitionedMatrixView<kRowBlockSize, kEBlockSize, kFBlockSize>::
+    LeftMultiplyF_sequential_col_prefetch(const double* x, double* y) const {
+  const CompressedColumnBlockStructure* cs = matrix_.block_structure_columns();
+  const double* values = matrix_.values();
+  for (int c = num_col_blocks_e_; c < cs->cols.size(); ++c) {
+    const int col_block_pos = cs->cols[c].block.position;
+    const int col_block_size = cs->cols[c].block.size;
+    int N = cs->cols[c].cells.size();
+
+    if (!N) {
+      continue;
+    }
+
+    int row_block_id, row_block_size, row_block_pos;
+    int row_block_id_next = cs->cols[c].cells[0].block_id;
+    int row_block_size_next = cs->rows[row_block_id_next].size;
+    int row_block_pos_next = cs->rows[row_block_id_next].position;
+
+    for (int i = 0; i < N; ++i) {
+      auto& cell = cs->cols[c].cells[i];
+      row_block_id = row_block_id_next;
+      row_block_size = row_block_size_next;
+      row_block_pos = row_block_pos_next;
+      if (i + 1 < N) {
+        const auto& next = cs->cols[c].cells[i + 1];
+        row_block_id_next = next.block_id;
+        row_block_size_next = cs->rows[row_block_id_next].size;
+        row_block_pos_next = cs->rows[row_block_id_next].position;
+        _mm_prefetch(values + next.position, _MM_HINT_T2);
+        _mm_prefetch(x + row_block_pos_next, _MM_HINT_T2);
+      }
+
+      if (row_block_id < num_row_blocks_e_) {
+        MatrixTransposeVectorMultiply<kRowBlockSize, kFBlockSize, 1>(
+            values + cell.position,
+            row_block_size,
+            col_block_size,
+            x + row_block_pos,
+            y + col_block_pos - num_cols_e_);
+      } else {
+        MatrixTransposeVectorMultiply<Eigen::Dynamic, Eigen::Dynamic, 1>(
+            values + cell.position,
+            row_block_size,
+            col_block_size,
+            x + row_block_pos,
+            y + col_block_pos - num_cols_e_);
+      }
+    }
+  }
+}
+template <int kRowBlockSize, int kEBlockSize, int kFBlockSize>
+void PartitionedMatrixView<kRowBlockSize, kEBlockSize, kFBlockSize>::
+    LeftMultiplyF_parallel_col_prefetch(const double* x, double* y) const {
+  const CompressedColumnBlockStructure* cs = matrix_.block_structure_columns();
+  const double* values = matrix_.values();
+  ParallelFor(
+      matrix_.GetContext(),
+      num_col_blocks_e_,
+      cs->cols.size(),
+      matrix_.GetNumThreads(),
+      [&](int c) {
+        const int col_block_pos = cs->cols[c].block.position;
+        const int col_block_size = cs->cols[c].block.size;
+        int N = cs->cols[c].cells.size();
+
+    if (!N) {
+      return;
+    }
+
+    int row_block_id, row_block_size, row_block_pos;
+    int row_block_id_next = cs->cols[c].cells[0].block_id;
+    int row_block_size_next = cs->rows[row_block_id_next].size;
+    int row_block_pos_next = cs->rows[row_block_id_next].position;
+
+    for (int i = 0; i < N; ++i) {
+      auto& cell = cs->cols[c].cells[i];
+      row_block_id = row_block_id_next;
+      row_block_size = row_block_size_next;
+      row_block_pos = row_block_pos_next;
+      if (i + 1 < N) {
+        const auto& next = cs->cols[c].cells[i + 1];
+        row_block_id_next = next.block_id;
+        row_block_size_next = cs->rows[row_block_id_next].size;
+        row_block_pos_next = cs->rows[row_block_id_next].position;
+        _mm_prefetch(values + next.position, _MM_HINT_T2);
+        _mm_prefetch(x + row_block_pos_next, _MM_HINT_T2);
+      }
+
 
           if (row_block_id < num_row_blocks_e_) {
             MatrixTransposeVectorMultiply<kRowBlockSize, kFBlockSize, 1>(
@@ -727,11 +934,11 @@ void PartitionedMatrixView<kRowBlockSize, kEBlockSize, kFBlockSize>::
   memcpy(y_, acc, sizeof(double) * num_cols_f());
   auto aggregate = timer.lap();
 
-  std::cout << "\nISB-A: " << __FUNCTION__ << ", " << matrix_.num_nonzeros()
+  std::cout << "\nISB-A: " << __FUNCTION__ << "-compute" << ", " << matrix_.num_nonzeros()
             << ", " << num_rows() << ", " << num_cols() << ", " << num_cols_e()
             << ", " << num_cols_f() << ", " << compute.first << ", "
             << compute.second << std::endl;
-  std::cout << "\nISB-A: " << __FUNCTION__ << ", "
+  std::cout << "\nISB-A: " << __FUNCTION__ << "-aggregate" << ", "
             << ", " << matrix_.num_nonzeros() << ", " << num_rows() << ", "
             << num_cols() << ", " << num_cols_e() << ", " << num_cols_f()
             << ", " << aggregate.first << ", " << aggregate.second << std::endl;
@@ -752,14 +959,19 @@ void PartitionedMatrixView<kRowBlockSize, kEBlockSize, kFBlockSize>::
   } else {
     std::unique_ptr<double[]> foo(new double[num_cols_f()]);
     memcpy(foo.get(), y, sizeof(double) * num_cols_f());
-    void(matrix_.CreateTransposedStructure());
 
-    BENCH_TIMER(LeftMultiplyF_sequential_row(x, foo.get()));
-    BENCH_TIMER(LeftMultiplyF_sequential_row(x, foo.get()));
-    BENCH_TIMER(LeftMultiplyF_sequential_col(x, foo.get()));
-    BENCH_TIMER(LeftMultiplyF_sequential_col_transpose(x, foo.get()));
-    BENCH_TIMER(LeftMultiplyF_parallel_col_transpose(x, foo.get()));
     BENCH_TIMER(LeftMultiplyF_parallel_col(x, y));
+
+#ifdef BENCH
+    BENCH_TIMER(LeftMultiplyF_sequential_row(x, foo.get()));
+#ifdef BENCH_ALL
+    BENCH_TIMER(LeftMultiplyF_parallel_col_prefetch(x, foo.get()));
+
+    void(matrix_.CreateTransposedStructure());
+    BENCH_TIMER(LeftMultiplyF_parallel_col_transpose(x, foo.get()));
+    void(matrix_.drop_transposed());
+#endif
+#endif
   }
 }
 
@@ -942,6 +1154,127 @@ void PartitionedMatrixView<kRowBlockSize, kEBlockSize, kFBlockSize>::
                 }
               });
 }
+
+template <int kRowBlockSize, int kEBlockSize, int kFBlockSize>
+void PartitionedMatrixView<kRowBlockSize, kEBlockSize, kFBlockSize>::
+    UpdateBlockDiagonalEtE_sequential_col_prefetch(
+        BlockSparseMatrix* block_diagonal) const {
+  block_diagonal->SetZero();
+  const CompressedColumnBlockStructure* cs = matrix_.block_structure_columns();
+  const double* values = matrix_.values();
+  const CompressedRowBlockStructure* block_diagonal_structure =
+      block_diagonal->block_structure();
+  for (int c = 0; c < num_col_blocks_e_; ++c) {
+    const int col_block_pos = cs->cols[c].block.position;
+    const int col_block_size = cs->cols[c].block.size;
+    int N = cs->cols[c].cells.size();
+
+    if (!N) {
+      continue;
+    }
+
+    int row_block_id, row_block_size, row_block_pos;
+    int row_block_id_next = cs->cols[c].cells[0].block_id;
+    int row_block_size_next = cs->rows[row_block_id_next].size;
+    int row_block_pos_next = cs->rows[row_block_id_next].position;
+
+    for (int i = 0; i < N; ++i) {
+      auto& cell = cs->cols[c].cells[i];
+      row_block_id = row_block_id_next;
+      row_block_size = row_block_size_next;
+      row_block_pos = row_block_pos_next;
+      if (i + 1 < N) {
+        const auto& next = cs->cols[c].cells[i + 1];
+        row_block_id_next = next.block_id;
+        row_block_size_next = cs->rows[row_block_id_next].size;
+        row_block_pos_next = cs->rows[row_block_id_next].position;
+        _mm_prefetch(values + next.position, _MM_HINT_T2);
+      }
+
+      const int cell_position =
+          block_diagonal_structure->rows[c].cells[0].position;
+
+      MatrixTransposeMatrixMultiply<kRowBlockSize,
+                                    kEBlockSize,
+                                    kRowBlockSize,
+                                    kEBlockSize,
+                                    1>(
+          values + cell.position,
+          row_block_size,
+          col_block_size,
+          values + cell.position,
+          row_block_size,
+          col_block_size,
+          block_diagonal->mutable_values() + cell_position,
+          0,
+          0,
+          col_block_size,
+          col_block_size);
+    }
+  }
+}
+template <int kRowBlockSize, int kEBlockSize, int kFBlockSize>
+void PartitionedMatrixView<kRowBlockSize, kEBlockSize, kFBlockSize>::
+    UpdateBlockDiagonalEtE_parallel_col_prefetch(
+        BlockSparseMatrix* block_diagonal) const {
+  block_diagonal->SetZero();
+  const CompressedColumnBlockStructure* cs = matrix_.block_structure_columns();
+  const double* values = matrix_.values();
+  const CompressedRowBlockStructure* block_diagonal_structure =
+      block_diagonal->block_structure();
+  ParallelFor(matrix_.GetContext(),
+              0,
+              num_col_blocks_e_,
+              matrix_.GetNumThreads(),
+              [&](int c) {
+                const int col_block_pos = cs->cols[c].block.position;
+                const int col_block_size = cs->cols[c].block.size;
+                int N = cs->cols[c].cells.size();
+
+    if (!N) {
+      return  ;
+    }
+
+    int row_block_id, row_block_size, row_block_pos;
+    int row_block_id_next = cs->cols[c].cells[0].block_id;
+    int row_block_size_next = cs->rows[row_block_id_next].size;
+    int row_block_pos_next = cs->rows[row_block_id_next].position;
+
+    for (int i = 0; i < N; ++i) {
+      auto& cell = cs->cols[c].cells[i];
+      row_block_id = row_block_id_next;
+      row_block_size = row_block_size_next;
+      row_block_pos = row_block_pos_next;
+      if (i + 1 < N) {
+        const auto& next = cs->cols[c].cells[i + 1];
+        row_block_id_next = next.block_id;
+        row_block_size_next = cs->rows[row_block_id_next].size;
+        row_block_pos_next = cs->rows[row_block_id_next].position;
+        _mm_prefetch(values + next.position, _MM_HINT_T2);
+      }
+
+                  const int cell_position =
+                      block_diagonal_structure->rows[c].cells[0].position;
+
+                  MatrixTransposeMatrixMultiply<kRowBlockSize,
+                                                kEBlockSize,
+                                                kRowBlockSize,
+                                                kEBlockSize,
+                                                1>(
+                      values + cell.position,
+                      row_block_size,
+                      col_block_size,
+                      values + cell.position,
+                      row_block_size,
+                      col_block_size,
+                      block_diagonal->mutable_values() + cell_position,
+                      0,
+                      0,
+                      col_block_size,
+                      col_block_size);
+                }
+              });
+}
 template <int kRowBlockSize, int kEBlockSize, int kFBlockSize>
 void PartitionedMatrixView<kRowBlockSize, kEBlockSize, kFBlockSize>::
     UpdateBlockDiagonalEtE_sequential_col_transpose(
@@ -1043,13 +1376,14 @@ void PartitionedMatrixView<kRowBlockSize, kEBlockSize, kFBlockSize>::
   if (!context) {
     UpdateBlockDiagonalEtE_sequential_row(block_diagonal);
   } else {
-    void(matrix_.CreateTransposedStructure());
     BENCH_TIMER(UpdateBlockDiagonalEtE_sequential_row(block_diagonal));
-    BENCH_TIMER(UpdateBlockDiagonalEtE_sequential_col(block_diagonal));
+#ifdef BENCH_ALL
     BENCH_TIMER(UpdateBlockDiagonalEtE_parallel_col(block_diagonal));
+    BENCH_TIMER(UpdateBlockDiagonalEtE_parallel_col_prefetch(block_diagonal));
+    void(matrix_.CreateTransposedStructure());
     BENCH_TIMER(UpdateBlockDiagonalEtE_parallel_col_transpose(block_diagonal));
-    BENCH_TIMER(
-        UpdateBlockDiagonalEtE_sequential_col_transpose(block_diagonal));
+    void(matrix_.drop_transposed());
+#endif
   }
 }
 
@@ -1245,6 +1579,167 @@ void PartitionedMatrixView<kRowBlockSize, kEBlockSize, kFBlockSize>::
 
 template <int kRowBlockSize, int kEBlockSize, int kFBlockSize>
 void PartitionedMatrixView<kRowBlockSize, kEBlockSize, kFBlockSize>::
+    UpdateBlockDiagonalFtF_sequential_col_prefetch(
+        BlockSparseMatrix* block_diagonal) const {
+  block_diagonal->SetZero();
+  const CompressedColumnBlockStructure* cs = matrix_.block_structure_columns();
+  const CompressedRowBlockStructure* block_diagonal_structure =
+      block_diagonal->block_structure();
+  const double* values = matrix_.values();
+
+  for (int c = num_col_blocks_e_; c < cs->cols.size(); ++c) {
+    const int col_block_pos = cs->cols[c].block.position;
+    const int col_block_size = cs->cols[c].block.size;
+    const int diagonal_block_id = c - num_col_blocks_e_;
+    const int cell_position =
+        block_diagonal_structure->rows[diagonal_block_id].cells[0].position;
+    int N = cs->cols[c].cells.size();
+
+    if (!N) {
+      continue;
+    }
+
+    int row_block_id, row_block_size, row_block_pos;
+    int row_block_id_next = cs->cols[c].cells[0].block_id;
+    int row_block_size_next = cs->rows[row_block_id_next].size;
+    int row_block_pos_next = cs->rows[row_block_id_next].position;
+
+    for (int i = 0; i < N; ++i) {
+      auto& cell = cs->cols[c].cells[i];
+      row_block_id = row_block_id_next;
+      row_block_size = row_block_size_next;
+      row_block_pos = row_block_pos_next;
+      if (i + 1 < N) {
+        const auto& next = cs->cols[c].cells[i + 1];
+        row_block_id_next = next.block_id;
+        row_block_size_next = cs->rows[row_block_id_next].size;
+        row_block_pos_next = cs->rows[row_block_id_next].position;
+        _mm_prefetch(values + next.position, _MM_HINT_T2);
+      }
+
+      if (row_block_id < num_row_blocks_e_) {
+        MatrixTransposeMatrixMultiply<kRowBlockSize,
+                                      kFBlockSize,
+                                      kRowBlockSize,
+                                      kFBlockSize,
+                                      1>(
+            values + cell.position,
+            row_block_size,
+            col_block_size,
+            values + cell.position,
+            row_block_size,
+            col_block_size,
+            block_diagonal->mutable_values() + cell_position,
+            0,
+            0,
+            col_block_size,
+            col_block_size);
+      } else {
+        MatrixTransposeMatrixMultiply<Eigen::Dynamic,
+                                      Eigen::Dynamic,
+                                      Eigen::Dynamic,
+                                      Eigen::Dynamic,
+                                      1>(
+            values + cell.position,
+            row_block_size,
+            col_block_size,
+            values + cell.position,
+            row_block_size,
+            col_block_size,
+            block_diagonal->mutable_values() + cell_position,
+            0,
+            0,
+            col_block_size,
+            col_block_size);
+      }
+    }
+  };
+}
+template <int kRowBlockSize, int kEBlockSize, int kFBlockSize>
+void PartitionedMatrixView<kRowBlockSize, kEBlockSize, kFBlockSize>::
+    UpdateBlockDiagonalFtF_parallel_col_prefetch(
+        BlockSparseMatrix* block_diagonal) const {
+  block_diagonal->SetZero();
+  const CompressedColumnBlockStructure* cs = matrix_.block_structure_columns();
+  const CompressedRowBlockStructure* block_diagonal_structure =
+      block_diagonal->block_structure();
+  const double* values = matrix_.values();
+  ParallelFor(
+      matrix_.GetContext(),
+      num_col_blocks_e_,
+      cs->cols.size(),
+      matrix_.GetNumThreads(),
+      [&](int c) {
+        const int col_block_pos = cs->cols[c].block.position;
+        const int col_block_size = cs->cols[c].block.size;
+        const int diagonal_block_id = c - num_col_blocks_e_;
+        const int cell_position =
+            block_diagonal_structure->rows[diagonal_block_id].cells[0].position;
+        int N = cs->cols[c].cells.size();
+
+    if (!N) {
+      return;
+    }
+
+    int row_block_id, row_block_size, row_block_pos;
+    int row_block_id_next = cs->cols[c].cells[0].block_id;
+    int row_block_size_next = cs->rows[row_block_id_next].size;
+    int row_block_pos_next = cs->rows[row_block_id_next].position;
+
+    for (int i = 0; i < N; ++i) {
+      auto& cell = cs->cols[c].cells[i];
+      row_block_id = row_block_id_next;
+      row_block_size = row_block_size_next;
+      row_block_pos = row_block_pos_next;
+      if (i + 1 < N) {
+        const auto& next = cs->cols[c].cells[i + 1];
+        row_block_id_next = next.block_id;
+        row_block_size_next = cs->rows[row_block_id_next].size;
+        row_block_pos_next = cs->rows[row_block_id_next].position;
+        _mm_prefetch(values + next.position, _MM_HINT_T2);
+      }
+
+          if (row_block_id < num_row_blocks_e_) {
+            MatrixTransposeMatrixMultiply<kRowBlockSize,
+                                          kFBlockSize,
+                                          kRowBlockSize,
+                                          kFBlockSize,
+                                          1>(
+                values + cell.position,
+                row_block_size,
+                col_block_size,
+                values + cell.position,
+                row_block_size,
+                col_block_size,
+                block_diagonal->mutable_values() + cell_position,
+                0,
+                0,
+                col_block_size,
+                col_block_size);
+          } else {
+            MatrixTransposeMatrixMultiply<Eigen::Dynamic,
+                                          Eigen::Dynamic,
+                                          Eigen::Dynamic,
+                                          Eigen::Dynamic,
+                                          1>(
+                values + cell.position,
+                row_block_size,
+                col_block_size,
+                values + cell.position,
+                row_block_size,
+                col_block_size,
+                block_diagonal->mutable_values() + cell_position,
+                0,
+                0,
+                col_block_size,
+                col_block_size);
+          }
+        }
+      });
+}
+
+template <int kRowBlockSize, int kEBlockSize, int kFBlockSize>
+void PartitionedMatrixView<kRowBlockSize, kEBlockSize, kFBlockSize>::
     UpdateBlockDiagonalFtF_sequential_col_transpose(
         BlockSparseMatrix* block_diagonal) const {
   block_diagonal->SetZero();
@@ -1384,14 +1879,16 @@ void PartitionedMatrixView<kRowBlockSize, kEBlockSize, kFBlockSize>::
   if (!context) {
     UpdateBlockDiagonalFtF_sequential_row(block_diagonal);
   } else {
-    void(matrix_.CreateTransposedStructure());
 
     BENCH_TIMER(UpdateBlockDiagonalFtF_sequential_row(block_diagonal));
-    BENCH_TIMER(UpdateBlockDiagonalFtF_sequential_col(block_diagonal));
-    BENCH_TIMER(
-        UpdateBlockDiagonalFtF_sequential_col_transpose(block_diagonal));
-    BENCH_TIMER(UpdateBlockDiagonalFtF_parallel_col_transpose(block_diagonal));
+#ifdef BENCH_ALL
+    BENCH_TIMER(UpdateBlockDiagonalFtF_parallel_col_prefetch(block_diagonal));
     BENCH_TIMER(UpdateBlockDiagonalFtF_parallel_col(block_diagonal));
+
+    void(matrix_.CreateTransposedStructure());
+    BENCH_TIMER(UpdateBlockDiagonalFtF_parallel_col_transpose(block_diagonal));
+    void(matrix_.drop_transposed());
+#endif
   }
 }
 
