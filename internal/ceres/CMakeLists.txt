@@ -38,6 +38,10 @@ elseif (CERES_THREADING_MODEL STREQUAL "OPENMP")
     # OpenMP in GCC requires the GNU OpenMP library.
     list(APPEND CERES_LIBRARY_PRIVATE_DEPENDENCIES gomp)
   endif()
+elseif (CERES_THREADING_MODEL STREQUAL "TBB")
+  set(CERES_PARALLEL_FOR_SRC parallel_for_tbb.cc)
+  find_package(TBB REQUIRED)
+  list(APPEND CERES_LIBRARY_PRIVATE_DEPENDENCIES ${TBB_LIBRARIES})
 elseif (CERES_THREADING_MODEL STREQUAL "NO_THREADS")
   set(CERES_PARALLEL_FOR_SRC parallel_for_nothreads.cc)
 endif()
@@ -328,6 +332,9 @@ endif()
 if (ACCELERATESPARSE)
   list(APPEND CERES_LIBRARY_PRIVATE_DEPENDENCIES_INCLUDE_DIRS
     ${AccelerateSparse_INCLUDE_DIRS})
+endif()
+if (CERES_THREADING_MODEL STREQUAL "TBB")
+  list(APPEND CERES_LIBRARY_PRIVATE_DEPENDENCIES_INCLUDE_DIRS ${TBB_INCLUDE_DIRS})
 endif()
 # Add include locations for optional dependencies to the Ceres target without
 # duplication.

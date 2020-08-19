@@ -77,6 +77,8 @@
 @CERES_USE_OPENMP@
 // If defined Ceres was compiled with modern C++ multithreading.
 @CERES_USE_CXX_THREADS@
+// If defined Ceres was compiled with TBB multithreading support
+@CERES_USE_TBB@
 
 // If defined, Ceres was built as a shared library.
 @CERES_USING_SHARED_LIBRARY@

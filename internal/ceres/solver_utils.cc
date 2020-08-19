@@ -81,6 +81,12 @@ std::string VersionString() {
   value += "-no_openmp";
 #endif
 
+#ifdef CERES_USE_TBB
+  value += "-tbb";
+#else
+  value += "-no_tbb"; 
+#endif
+
 #ifdef CERES_NO_CUSTOM_BLAS
   value += "-no_custom_blas";
 #endif

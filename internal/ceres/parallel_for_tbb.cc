@@ -1,5 +1,5 @@
 // Ceres Solver - A fast non-linear least squares minimizer
-// Copyright 2017 Google Inc. All rights reserved.
+// Copyright 2018 Google Inc. All rights reserved.
 // http://ceres-solver.org/
 //
 // Redistribution and use in source and binary forms, with or without
@@ -26,60 +26,73 @@
 // ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 // POSSIBILITY OF SUCH DAMAGE.
 //
-// Author: yp@photonscore.de (Yury Prokazov)
+// Author: vitus@google.com (Michael Vitus)
 
-#include "ceres/thread_token_provider.h"
-
-#ifdef CERES_USE_OPENMP
-#include <omp.h>
-#endif
+// This include must come before any #ifndef check on Ceres compile options.
+#include "ceres/internal/port.h"
 
 #ifdef CERES_USE_TBB
+
+#include "ceres/parallel_for.h"
+
+#include <thread>
+
+#include <tbb/parallel_for.h>
 #include <tbb/task_arena.h>
-#endif
+
+#include "ceres/scoped_thread_token.h"
+#include "ceres/thread_token_provider.h"
+#include "glog/logging.h"
 
 namespace ceres {
 namespace internal {
 
-ThreadTokenProvider::ThreadTokenProvider(int num_threads) {
-  (void)num_threads;
-#ifdef CERES_USE_CXX_THREADS
-  for (int i = 0; i < num_threads; i++) {
-    pool_.Push(i);
+int MaxNumThreadsAvailable() {
+  return std::thread::hardware_concurrency(); 
+}
+
+void ParallelFor(ContextImpl* context,
+                 int start,
+                 int end,
+                 int num_threads,
+                 const std::function<void(int)>& function) {
+  CHECK_GT(num_threads, 0);
+  CHECK(context != NULL);
+  if (end <= start) {
+    return;
   }
-#endif
 
+  // Fast path for when it is single threaded.
+  if (num_threads == 1) {
+    for (int i = start; i < end; ++i) {
+      function(i);
+    }
+    return;
+  }
+
+  tbb::task_arena task_arena(num_threads);
+  task_arena.execute([&] {
+    tbb::parallel_for(start, end, function, tbb::simple_partitioner());
+  });
 }
 
-int ThreadTokenProvider::Acquire() {
-#ifdef CERES_USE_OPENMP
-  return omp_get_thread_num();
-#endif
+void ParallelFor(ContextImpl* context,
+                 int start,
+                 int end,
+                 int num_threads,
+                 const std::function<void(int thread_id, int i)>& function) {
+  CHECK(context != NULL);
 
-#ifdef CERES_USE_TBB
-  auto id = tbb::this_task_arena::current_thread_index();
-  return id == tbb::task_arena::not_initialized ? 0 : id;
-#endif
-
-#ifdef CERES_NO_THREADS
-  return 0;
-#endif
-
-#ifdef CERES_USE_CXX_THREADS
-  int thread_id;
-  CHECK(pool_.Wait(&thread_id));
-  return thread_id;
-#endif
-
+  ThreadTokenProvider thread_token_provider(num_threads);
+  ParallelFor(context, start, end, num_threads, [&](int i) {
+    const ScopedThreadToken scoped_thread_token(&thread_token_provider);
+    const int thread_id = scoped_thread_token.token();
+    function(thread_id, i);
+  });
 }
 
-void ThreadTokenProvider::Release(int thread_id) {
-  (void)thread_id;
-#ifdef CERES_USE_CXX_THREADS
-  pool_.Push(thread_id);
-#endif
-
-}
 
 }  // namespace internal
 }  // namespace ceres
+
+#endif // CERES_USE_TBB
